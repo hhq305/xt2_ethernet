@@ -22,6 +22,8 @@ module cmd_decode (
     output reg  [1:0]  proc_mode_o,
     output reg         img_req_pulse_o,
     output reg         cam_en_o,
+    output reg         sd_photo_req_o,    // 扩展⑥ : 触发读 TF 卡照片 (单脉冲)
+    output reg  [31:0] sd_sec_addr_o,     // BMP 起始扇区号 (PC 下发)
     output reg         ack_pulse_o
 );
 
@@ -38,6 +40,7 @@ module cmd_decode (
     reg [7:0] last_byte;     // 上一拍 valid 字节
     reg [7:0] cmd_r;
     reg [7:0] buf0, buf1, buf2, buf3;
+    reg [31:0] sec_r;        // 扇区号拼接中间寄存
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -49,11 +52,15 @@ module cmd_decode (
             proc_mode_o     <= 2'd0;
             cam_en_o        <= 1'b0;
             img_req_pulse_o <= 1'b0;
+            sd_photo_req_o  <= 1'b0;
+            sd_sec_addr_o   <= 32'd0;
+            sec_r           <= 32'd0;
             ack_pulse_o     <= 1'b0;
             buf0 <= 8'h00; buf1 <= 8'h00; buf2 <= 8'h00; buf3 <= 8'h00;
         end else begin
             // 一拍脉冲, 默认拉低
             img_req_pulse_o <= 1'b0;
+            sd_photo_req_o  <= 1'b0;
             ack_pulse_o     <= 1'b0;
 
             if (rx_valid) begin
@@ -90,22 +97,32 @@ module cmd_decode (
                                     seg_bcd_o[15:12] <= rx_data[3:0];
                                     st <= ST_PAY1;
                                 end
+                                `CMD_SD_PHOTO  : begin
+                                    sec_r[31:24] <= rx_data;   // 扇区号高字节先发
+                                    st <= ST_PAY1;
+                                end
                                 default        : begin st <= ST_HUNT; end
                             endcase
                         end
                         ST_PAY1: begin
                             buf1 <= rx_data;
                             if (cmd_r == `CMD_SEG_SET) seg_bcd_o[11:8] <= rx_data[3:0];
+                            if (cmd_r == `CMD_SD_PHOTO) sec_r[23:16] <= rx_data;
                             st <= ST_PAY2;
                         end
                         ST_PAY2: begin
                             buf2 <= rx_data;
                             if (cmd_r == `CMD_SEG_SET) seg_bcd_o[7:4] <= rx_data[3:0];
+                            if (cmd_r == `CMD_SD_PHOTO) sec_r[15:8] <= rx_data;
                             st <= ST_PAY3;
                         end
                         ST_PAY3: begin
                             buf3        <= rx_data;
                             if (cmd_r == `CMD_SEG_SET) seg_bcd_o[3:0] <= rx_data[3:0];
+                            if (cmd_r == `CMD_SD_PHOTO) begin
+                                sd_sec_addr_o  <= {sec_r[31:8], rx_data};
+                                sd_photo_req_o <= 1'b1;
+                            end
                             ack_pulse_o <= 1'b1;
                             st          <= ST_HUNT;
                         end

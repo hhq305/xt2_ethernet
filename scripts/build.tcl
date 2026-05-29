@@ -52,9 +52,22 @@ set DESIGN_FILES {
     src/app/img_tx_rom.v
     src/app/sobel_ondemand.v
     src/app/img_proc_inline.v
+    src/app/sd_photo64.v
+    src/app/photo_tx.v
+    src/app/dpram_64x64.v
     src/top/udp_transmit_test.v
 }
 foreach f $DESIGN_FILES {
+    add_file -type verilog "$PROJ_ROOT/$f"
+}
+
+# 3.1b 扩展⑥ TF 卡 SD-SPI + 50MHz PLL
+foreach f {
+    src/vendor/al_ip/pll_50.v
+    src/vendor/sd/sd_ctrl_top.v
+    src/vendor/sd/sd_init.v
+    src/vendor/sd/sd_read.v
+} {
     add_file -type verilog "$PROJ_ROOT/$f"
 }
 

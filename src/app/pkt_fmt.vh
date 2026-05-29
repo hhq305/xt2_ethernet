@@ -16,6 +16,9 @@
 `define CMD_CAM_START   8'h30
 `define CMD_CAM_FRAME   8'h31
 `define CMD_PROC_MODE   8'h40
+// 扩展⑥ : TF 卡 BMP 照片 -> PC (64x64 RGB222, 多包)
+`define CMD_SD_PHOTO    8'h50
+`define CMD_PHOTO_DATA  8'h51
 
 // 图像参数 (默认 320x240 RGB332，可选 RGB565/灰度)
 `define IMG_W           10'd320

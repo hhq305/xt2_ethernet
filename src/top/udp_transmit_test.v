@@ -60,6 +60,12 @@
 //   每发 led 0xX, LED 末字节应跟随变化 (但末尾可能被 0x00 padding 覆盖)
 // =============================================================
 //  `define LAST_BYTE_PROBE
+// =============================================================
+// SD 照片诊断 : LED1=sd_init_done LED2=req到达 LED3=读卡完成 LED4=发送启动
+//   (按 KEY1 清零 sticky). 定位 SD 照片卡在哪一阶段.
+//   照片功能已验证通过, 平时关闭, 让 LED 恢复 PC 命令控制.
+// =============================================================
+//  `define SD_PHOTO_PROBE
 module udp_transmit_test(
         input               key1,
         input               key2,
@@ -90,6 +96,11 @@ module udp_transmit_test(
         output             cam_pwdn,
         output             cam_scl,
         inout              cam_sda,
+        // 选题二 扩展⑥ : TF 卡 (SD SPI 模式)
+        input              sd_miso,
+        output             sd_clk,
+        output             sd_cs,
+        output             sd_mosi,
         
     `ifdef DEBUG_UDP
         output wire         debug_out,
@@ -572,6 +583,8 @@ wire [31:0] seg_bcd_eth;
 wire [1:0]  proc_mode_eth;
 wire        img_req_pulse;
 wire        cam_en;
+wire        sd_photo_req;          // 扩展⑥ : udp_clk 域单脉冲
+wire [31:0] sd_sec_addr_cmd;       // 扩展⑥ : BMP 起始扇区号
 cmd_decode u_cmd_decode (
     .clk            (udp_clk),
     .rst_n          (rst_n),                    // = key2
@@ -583,6 +596,8 @@ cmd_decode u_cmd_decode (
     .proc_mode_o    (proc_mode_eth),
     .img_req_pulse_o(img_req_pulse),
     .cam_en_o       (cam_en),
+    .sd_photo_req_o (sd_photo_req),
+    .sd_sec_addr_o  (sd_sec_addr_cmd),
     .ack_pulse_o    ()
 );
 // === LED 映射 (引脚已确认) ===
@@ -693,7 +708,46 @@ end
 
 assign led = {probe_led_cmd, probe_magic1, probe_magic0, probe_any_byte};
 `else
+`ifdef SD_PHOTO_PROBE
+// =============================================================
+// SD 照片分阶段 sticky 探针 (按 KEY1 清零)
+//   LED1 = sd_init_done (实时): SD 卡 SPI 初始化成功
+//   LED2 = 并行解析到 A5 5A 50: CMD_SD_PHOTO 字节到达 app 层
+//   LED3 = sd_photo_req 出现过: cmd_decode 解析出命令
+//   LED4 = frame_ready 出现过: 读卡 + 降采样完成
+// 判读: LED2灭=字节没到; LED2亮LED3灭=cmd_decode没解析; LED3亮LED4灭=读卡没完成
+// =============================================================
+reg [1:0] sdp_st;          // 0=idle 1=gotA5 2=got5A
+reg       sdp_hdr_seen;    // LED2: 看到 A5 5A 50
+reg       sdp_req_seen;    // LED3: cmd_decode sd_photo_req
+reg       sdp_frame_seen;  // LED4: frame_ready
+always @(posedge udp_clk or negedge key1) begin
+    if (!key1) begin
+        sdp_st         <= 2'd0;
+        sdp_hdr_seen   <= 1'b0;
+        sdp_req_seen   <= 1'b0;
+        sdp_frame_seen <= 1'b0;
+    end else begin
+        if (sd_photo_req)    sdp_req_seen   <= 1'b1;
+        if (frame_ready_udp) sdp_frame_seen <= 1'b1;
+        if (app_rx_data_valid) begin
+            case (sdp_st)
+                2'd0: sdp_st <= (app_rx_data == 8'hA5) ? 2'd1 : 2'd0;
+                2'd1: sdp_st <= (app_rx_data == 8'h5A) ? 2'd2 :
+                                (app_rx_data == 8'hA5) ? 2'd1 : 2'd0;
+                2'd2: begin
+                          if (app_rx_data == 8'h50) sdp_hdr_seen <= 1'b1;
+                          sdp_st <= (app_rx_data == 8'hA5) ? 2'd1 : 2'd0;
+                      end
+                default: sdp_st <= 2'd0;
+            endcase
+        end
+    end
+end
+assign led = {sdp_frame_seen, sdp_req_seen, sdp_hdr_seen, sd_init_done};
+`else
 assign led = led_eth8[3:0];
+`endif
 `endif
 `endif
 `endif
@@ -839,6 +893,10 @@ udp_data_tpg u1_udp_data_tpg(
 //------------------------------------------------------------
 // 选题二 扩展② : FPGA -> PC 主动回传图像 (替换 udp_loopback)
 //------------------------------------------------------------
+wire [7:0]  img_app_tx_data;
+wire        img_app_tx_data_valid;
+wire [15:0] img_udp_data_length;
+wire        img_app_tx_request;
 img_tx_rom #(
     .PAY_LEN (16'd256)
 ) u2_img_tx_rom (
@@ -850,11 +908,140 @@ img_tx_rom #(
     .wr_data             (img_wr_data        ),
     .udp_tx_ready        (udp_tx_ready       ),
     .app_tx_ack          (app_tx_ack         ),
-    .app_tx_data         (app_tx_data        ),
-    .app_tx_data_valid   (app_tx_data_valid  ),
-    .udp_data_length     (udp_data_length    ),
-    .app_tx_request      (app_tx_data_request)
+    .app_tx_data         (img_app_tx_data        ),
+    .app_tx_data_valid   (img_app_tx_data_valid  ),
+    .udp_data_length     (img_udp_data_length    ),
+    .app_tx_request      (img_app_tx_request     )
 );
+
+//------------------------------------------------------------
+// 选题二 扩展⑥ : TF 卡 BMP 照片 -> 64x64 RGB222 -> 多包回传
+//------------------------------------------------------------
+// 50MHz 0deg/180deg SD 参考时钟 (由 50MHz 板载晶振 clk_25 生成)
+wire sd_clk_ref;
+wire sd_clk_ref_180;
+pll_50 u_pll_50 (
+    .refclk   (clk_25         ),
+    .reset    (1'b0           ),
+    .extlock  (               ),
+    .clk0_out (sd_clk_ref      ),   // 50MHz 0deg
+    .clk1_out (sd_clk_ref_180  ),   // 50MHz 180deg
+    .clk2_out (               )
+);
+
+// --- 跨时钟: sd_photo_req(udp_clk 脉冲) -> sd_clk_ref 域 start 脉冲 ---
+reg        sd_req_tgl;
+always @(posedge udp_clk or negedge rst_n) begin
+    if (!rst_n) sd_req_tgl <= 1'b0;
+    else if (sd_photo_req) sd_req_tgl <= ~sd_req_tgl;
+end
+reg [2:0] sd_req_sync;
+always @(posedge sd_clk_ref or negedge rst_n) begin
+    if (!rst_n) sd_req_sync <= 3'd0;
+    else        sd_req_sync <= {sd_req_sync[1:0], sd_req_tgl};
+end
+wire sd_start = sd_req_sync[2] ^ sd_req_sync[1];
+
+// --- SD 卡 SPI 顶层 ---
+wire        sd_rd_busy;
+wire        sd_rd_val_en;
+wire [15:0] sd_rd_val_data;
+wire        sd_rd_start_en;
+wire [31:0] sd_rd_sec_addr;
+wire        sd_init_done;
+sd_ctrl_top u_sd_ctrl_top (
+    .clk_ref        (sd_clk_ref     ),
+    .clk_ref_180deg (sd_clk_ref_180 ),
+    .rst_n          (rst_n          ),
+    .sd_miso        (sd_miso        ),
+    .sd_clk         (sd_clk         ),
+    .sd_cs          (sd_cs          ),
+    .sd_mosi        (sd_mosi        ),
+    .wr_busy        (               ),
+    .rd_start_en    (sd_rd_start_en ),
+    .rd_sec_addr    (sd_rd_sec_addr ),
+    .rd_busy        (sd_rd_busy     ),
+    .rd_val_en      (sd_rd_val_en   ),
+    .rd_val_data    (sd_rd_val_data ),
+    .sd_init_done   (sd_init_done   )
+);
+
+// --- BMP 像素流 -> 64x64 RGB222 降采样 (sd_clk_ref 域) ---
+wire        ph_bram_wen;
+wire [11:0] ph_bram_waddr;
+wire [5:0]  ph_bram_wdata;
+wire        frame_ready_sd;
+sd_photo64 u_sd_photo64 (
+    .clk          (sd_clk_ref     ),
+    .rst_n        (rst_n          ),
+    .start        (sd_start       ),
+    .start_sector (sd_sec_addr_cmd),   // 准静态: 命令早于 start 锁存
+    .rd_busy      (sd_rd_busy     ),
+    .rd_val_en    (sd_rd_val_en   ),
+    .rd_val_data  (sd_rd_val_data ),
+    .rd_start_en  (sd_rd_start_en ),
+    .rd_sec_addr  (sd_rd_sec_addr ),
+    .bram_wen     (ph_bram_wen    ),
+    .bram_waddr   (ph_bram_waddr  ),
+    .bram_wdata   (ph_bram_wdata  ),
+    .frame_ready  (frame_ready_sd )
+);
+
+// --- 64x64 双时钟 BRAM ---
+wire [11:0] ph_bram_raddr;
+wire [5:0]  ph_bram_rdata;
+dpram_64x64 u_dpram_64x64 (
+    .wclk  (sd_clk_ref    ),
+    .wen   (ph_bram_wen   ),
+    .waddr (ph_bram_waddr ),
+    .wdata (ph_bram_wdata ),
+    .rclk  (udp_clk       ),
+    .raddr (ph_bram_raddr ),
+    .rdata (ph_bram_rdata )
+);
+
+// --- 跨时钟: frame_ready(sd_clk_ref 脉冲) -> udp_clk 域 ---
+reg        fr_tgl;
+always @(posedge sd_clk_ref or negedge rst_n) begin
+    if (!rst_n) fr_tgl <= 1'b0;
+    else if (frame_ready_sd) fr_tgl <= ~fr_tgl;
+end
+reg [2:0] fr_sync;
+always @(posedge udp_clk or negedge rst_n) begin
+    if (!rst_n) fr_sync <= 3'd0;
+    else        fr_sync <= {fr_sync[1:0], fr_tgl};
+end
+wire frame_ready_udp = fr_sync[2] ^ fr_sync[1];
+
+// --- 多包照片发送 ---
+wire [7:0]  ph_app_tx_data;
+wire        ph_app_tx_data_valid;
+wire [15:0] ph_udp_data_length;
+wire        ph_app_tx_request;
+wire        photo_busy;
+photo_tx #(
+    .PKT_PAY (16'd1024),
+    .NPKT    (8'd4    )
+) u_photo_tx (
+    .clk               (udp_clk             ),
+    .rst_n             (rst_n               ),
+    .frame_ready       (frame_ready_udp     ),
+    .bram_raddr        (ph_bram_raddr       ),
+    .bram_rdata        (ph_bram_rdata       ),
+    .udp_tx_ready      (udp_tx_ready        ),
+    .app_tx_ack        (app_tx_ack          ),
+    .app_tx_data       (ph_app_tx_data      ),
+    .app_tx_data_valid (ph_app_tx_data_valid),
+    .udp_data_length   (ph_udp_data_length  ),
+    .app_tx_request    (ph_app_tx_request   ),
+    .busy              (photo_busy          )
+);
+
+// --- TX 多路选择: photo 占用时走 photo_tx, 否则走 img_tx_rom ---
+assign app_tx_data         = photo_busy ? ph_app_tx_data       : img_app_tx_data;
+assign app_tx_data_valid   = photo_busy ? ph_app_tx_data_valid : img_app_tx_data_valid;
+assign udp_data_length     = photo_busy ? ph_udp_data_length   : img_udp_data_length;
+assign app_tx_data_request = photo_busy ? ph_app_tx_request     : img_app_tx_request;
 
 //------------------------------------------------------------  
 //UDP

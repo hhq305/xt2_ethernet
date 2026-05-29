@@ -76,3 +76,9 @@ set_pin_assignment { cam_rst_n }   { LOCATION = P15; IOSTANDARD = LVCMOS33; DRIV
 set_pin_assignment { cam_scl }     { LOCATION = T15; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment { cam_sda }     { LOCATION = R16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment { cam_vsync }   { LOCATION = R14; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
+
+# TF 卡 SD-SPI (Ext-6) -- HX4S20C 板载 TF 卡座
+set_pin_assignment { sd_clk }  { LOCATION = A14; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment { sd_miso } { LOCATION = B14; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
+set_pin_assignment { sd_mosi } { LOCATION = A13; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment { sd_cs }   { LOCATION = A12; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
