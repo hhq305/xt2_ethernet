@@ -85,15 +85,27 @@ module cmd_decode (
                                 `CMD_LED_SET   : begin led_o <= rx_data; ack_pulse_o <= 1'b1; st <= ST_HUNT; end
                                 `CMD_PROC_MODE : begin proc_mode_o <= rx_data[1:0]; ack_pulse_o <= 1'b1; st <= ST_HUNT; end
                                 `CMD_CAM_START : begin cam_en_o <= rx_data[0]; ack_pulse_o <= 1'b1; st <= ST_HUNT; end
-                                `CMD_SEG_SET   : begin buf0 <= rx_data; st <= ST_PAY1; end
+                                `CMD_SEG_SET   : begin
+                                    buf0 <= rx_data;
+                                    seg_bcd_o[15:12] <= rx_data[3:0];
+                                    st <= ST_PAY1;
+                                end
                                 default        : begin st <= ST_HUNT; end
                             endcase
                         end
-                        ST_PAY1: begin buf1 <= rx_data; st <= ST_PAY2; end
-                        ST_PAY2: begin buf2 <= rx_data; st <= ST_PAY3; end
+                        ST_PAY1: begin
+                            buf1 <= rx_data;
+                            if (cmd_r == `CMD_SEG_SET) seg_bcd_o[11:8] <= rx_data[3:0];
+                            st <= ST_PAY2;
+                        end
+                        ST_PAY2: begin
+                            buf2 <= rx_data;
+                            if (cmd_r == `CMD_SEG_SET) seg_bcd_o[7:4] <= rx_data[3:0];
+                            st <= ST_PAY3;
+                        end
                         ST_PAY3: begin
                             buf3        <= rx_data;
-                            seg_bcd_o   <= {buf0, buf1, buf2, rx_data};
+                            if (cmd_r == `CMD_SEG_SET) seg_bcd_o[3:0] <= rx_data[3:0];
                             ack_pulse_o <= 1'b1;
                             st          <= ST_HUNT;
                         end

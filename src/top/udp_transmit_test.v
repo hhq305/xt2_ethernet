@@ -503,7 +503,14 @@ reg [7:0] cnt1;
 wire      end_cnt1;
 wire      add_cnt1;
 
-wire rst_n = key2;    // KEY 上拉, 默认=1=运行, 按下=0=复位 (标准 active-low rst_n)
+// 上电自动复位 (POR): 开机后自动拉低 rst_n 约 1ms 再释放, 无需手按 KEY2
+reg [15:0] por_cnt = 16'd0;
+reg        por_n   = 1'b0;
+always @(posedge udp_clk) begin
+    if (por_cnt != 16'hFFFF) por_cnt <= por_cnt + 1'b1;
+    por_n <= (por_cnt == 16'hFFFF);
+end
+wire rst_n = key2 & por_n;    // KEY2 手动复位 + 上电自动复位 (active-low)
 //计数器2
  always @(posedge udp_clk or negedge rst_n)begin
      if(!rst_n)begin
