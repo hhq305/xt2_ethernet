@@ -1,0 +1,36 @@
+// =============================================================
+// hdmi_top_wrap.v  — HDMI 集成 (注意点 ①)
+// 包装 lab_ex_5/src/hdmi/hdmi_tx (FAMILY="EG4") :
+//   该模块内部使用安路 EG4 的 OSER10 / LVDS33 原语完成 10:1 串行
+//   并直接驱动 HDMI_*_P 差分对。
+// 接口 : 输入 VGA 流 + 像素时钟 + 5x 串行时钟, 输出 4 对 HDMI。
+// =============================================================
+`timescale 1ns/1ps
+module hdmi_top_wrap (
+    input  wire       pclk,        // 像素时钟 (40MHz @ 800x600)
+    input  wire       sclk5x,      // 5*pclk 串行时钟 (200MHz)
+    input  wire       rst_n,
+    input  wire       de, hs, vs,
+    input  wire [7:0] r, g, b,
+    output wire       HDMI_CLK_P,
+    output wire       HDMI_D0_P,
+    output wire       HDMI_D1_P,
+    output wire       HDMI_D2_P
+);
+    // 调用安路 demo 提供的 hdmi_tx (位于
+    //   lab_ex_5_ov5640_sdram_hdmi/src/hdmi/hdmi_tx.vhd, FAMILY="EG4"),
+    // 该模块内部已经例化 OSER10 + LVDS33 OBUF, 时序由原厂保证。
+    hdmi_tx #(.FAMILY("EG4")) u_hdmi_tx (
+        .PXLCLK_I    (pclk),
+        .PXLCLK_5X_I (sclk5x),
+        .RST_N       (rst_n),
+        .VGA_HS      (hs),
+        .VGA_VS      (vs),
+        .VGA_DE      (de),
+        .VGA_RGB     ({r, g, b}),
+        .HDMI_CLK_P  (HDMI_CLK_P),
+        .HDMI_D2_P   (HDMI_D2_P),
+        .HDMI_D1_P   (HDMI_D1_P),
+        .HDMI_D0_P   (HDMI_D0_P)
+    );
+endmodule

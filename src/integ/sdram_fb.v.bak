@@ -1,0 +1,128 @@
+// =============================================================
+// sdram_fb.v  — SDRAM 帧缓存 (注意点 ④)
+// 用 lab_ex_5/src/sdram/sdram.v (含 sdr_as_ram 控制器) 作为后端,
+// 对外提供与 framebuf.v 完全相同的接口, 顶层可一行替换。
+//
+// 写口 (wclk 域)、读口 (rclk 域) 通过异步 FIFO 各自打入 SDRAM
+// 的 App_wr/App_rd 接口 (Clk = SDRAM 控制器主时钟)。
+// =============================================================
+`timescale 1ns/1ps
+module sdram_fb #(
+    parameter W   = 1024,
+    parameter H   = 768,
+    parameter DW  = 16,           // SDRAM 字宽 16bit, 灰度时上半字补零
+    parameter AW  = 24
+)(
+    input  wire           wclk,
+    input  wire           wen,
+    input  wire [AW-1:0]  waddr,
+    input  wire [DW-1:0]  wdata,
+
+    input  wire           rclk,
+    input  wire           ren,
+    input  wire [AW-1:0]  raddr,
+    output reg  [DW-1:0]  rdata,
+
+    // SDRAM 控制器主时钟 (一般 100MHz) + 同相 90/180 度移位时钟
+    input  wire           sdr_clk,
+    input  wire           sdr_clk_sft,
+    input  wire           sdr_rst,
+    output wire           sdr_init_done
+);
+    // ---------- 写 FIFO (wclk -> sdr_clk) ----------
+    wire        wf_full, wf_empty;
+    wire        wf_re;
+    wire [AW+DW-1:0] wf_dout;
+    async_fifo #(.DW(AW+DW), .DEPTH(64)) u_wf (
+        .wclk(wclk), .wen(wen & ~wf_full), .din({waddr,wdata}), .full(wf_full),
+        .rclk(sdr_clk), .ren(wf_re),       .dout(wf_dout),     .empty(wf_empty)
+    );
+
+    // ---------- 读地址 FIFO (rclk -> sdr_clk) + 数据 FIFO (sdr_clk -> rclk) ----------
+    wire raf_full, raf_empty;  wire raf_re;  wire [AW-1:0] raf_dout;
+    async_fifo #(.DW(AW), .DEPTH(64)) u_raf (
+        .wclk(rclk), .wen(ren & ~raf_full), .din(raddr),       .full(raf_full),
+        .rclk(sdr_clk), .ren(raf_re),       .dout(raf_dout),   .empty(raf_empty)
+    );
+    wire rdf_full, rdf_empty; wire [DW-1:0] rdf_dout; wire rdf_re;
+    wire        sdr_rd_en;
+    wire [DW-1:0] sdr_rd_dout;
+    async_fifo #(.DW(DW), .DEPTH(64)) u_rdf (
+        .wclk(sdr_clk), .wen(sdr_rd_en), .din(sdr_rd_dout), .full(rdf_full),
+        .rclk(rclk),    .ren(rdf_re),    .dout(rdf_dout),   .empty(rdf_empty)
+    );
+
+    // ---------- 读输出 (单拍寄存) ----------
+    always @(posedge rclk) if (~rdf_empty) rdata <= rdf_dout;
+    assign rdf_re = ~rdf_empty;
+
+    // ---------- 简单仲裁: 写优先, 否则发起读 ----------
+    reg        app_wr_en;
+    reg [AW-1:0] app_wr_addr;
+    reg [DW-1:0] app_wr_din;
+    reg        app_rd_en;
+    reg [AW-1:0] app_rd_addr;
+    assign wf_re  = ~wf_empty;
+    assign raf_re = wf_empty & ~raf_empty;
+    always @(posedge sdr_clk) begin
+        app_wr_en   <= ~wf_empty;
+        app_wr_addr <= wf_dout[AW+DW-1:DW];
+        app_wr_din  <= wf_dout[DW-1:0];
+        app_rd_en   <=  wf_empty & ~raf_empty;
+        app_rd_addr <= raf_dout;
+    end
+
+    // ---------- SDRAM 控制器 (来自 lab_ex_5/src/sdram/sdram.v) ----------
+    sdram u_sdram (
+        .Clk             (sdr_clk),
+        .Clk_sft         (sdr_clk_sft),
+        .Rst             (sdr_rst),
+        .Sdr_init_done   (sdr_init_done),
+        .Sdr_init_ref_vld(),
+        .Sdr_busy        (),
+        .App_wr_en       (app_wr_en),
+        .App_wr_addr     (app_wr_addr),
+        .App_wr_dm       (2'b00),         // 全字写, 不掩码
+        .App_wr_din      (app_wr_din),
+        .App_rd_en       (app_rd_en),
+        .App_rd_addr     (app_rd_addr),
+        .Sdr_rd_en       (sdr_rd_en),
+        .Sdr_rd_dout     (sdr_rd_dout)
+    );
+endmodule
+
+// =============================================================
+// 极简异步 FIFO (灰码指针, 双沿同步)
+// =============================================================
+module async_fifo #(parameter DW=16, parameter DEPTH=16) (
+    input  wire          wclk, wen,
+    input  wire [DW-1:0] din,
+    output wire          full,
+    input  wire          rclk, ren,
+    output reg  [DW-1:0] dout,
+    output wire          empty
+);
+    localparam AW = $clog2(DEPTH);
+    reg [DW-1:0] mem [0:DEPTH-1];
+    reg [AW:0]   wptr_b=0, rptr_b=0;
+    reg [AW:0]   wptr_g=0, rptr_g=0;
+    reg [AW:0]   rptr_g_w1=0, rptr_g_w2=0;
+    reg [AW:0]   wptr_g_r1=0, wptr_g_r2=0;
+
+    function [AW:0] b2g(input [AW:0] b); b2g = b ^ (b>>1); endfunction
+
+    always @(posedge wclk) begin
+        if (wen && !full) begin mem[wptr_b[AW-1:0]] <= din; wptr_b<=wptr_b+1'b1; end
+        wptr_g     <= b2g(wptr_b + (wen && !full));
+        rptr_g_w1  <= rptr_g;
+        rptr_g_w2  <= rptr_g_w1;
+    end
+    always @(posedge rclk) begin
+        if (ren && !empty) begin dout <= mem[rptr_b[AW-1:0]]; rptr_b<=rptr_b+1'b1; end
+        rptr_g     <= b2g(rptr_b + (ren && !empty));
+        wptr_g_r1  <= wptr_g;
+        wptr_g_r2  <= wptr_g_r1;
+    end
+    assign full  = (wptr_g == {~rptr_g_w2[AW:AW-1], rptr_g_w2[AW-2:0]});
+    assign empty = (rptr_g == wptr_g_r2);
+endmodule
