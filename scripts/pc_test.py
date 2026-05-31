@@ -12,10 +12,10 @@
     python pc_test.py pattern stripes  # 发送条纹图案到 FPGA
     python pc_test.py img          # 触发图像回传, 接收并打印前 16 字节
     python pc_test.py mode 0       # 设置 VGA 处理模式 0=RAW 1=GRAY 2=EDGE 3=INVERT
-- Ext-6: TF 卡 BMP 照片回传 (64x64)
+- Ext-6: TF 卡 BMP 照片流式回传 (全分辨率 640x480 RGB565, 600 包)
     python pc_test.py mkbmp a.jpg  # 任意图片 -> 640x480 24位 BMP(out.bmp), 拷进卡
     python pc_test.py findsector 1 # (管理员) 扫描物理盘1, 自动找 BMP 起始扇区
-    python pc_test.py photo 40992  # 触发读卡, 接收 4 包重组 64x64 -> photo64.png
+    python pc_test.py photo 40992  # 触发读卡, 接收 600 包重组 640x480 -> photo64.png
 """
 import socket, sys, time, os, subprocess
 
@@ -190,77 +190,149 @@ def cmd_pattern(name):
     print(f"[+] pattern '{name}' sent (16x16 RGB222, 256 bytes) via CMD_IMG_FRAME")
 
 # ============================================================
-# Ext-6 : TF 卡 BMP 照片 -> 64x64 RGB222 多包回传
+# Ext-6 : TF 卡 BMP 照片 -> 全分辨率 640x480 RGB565 流式回传
 # ============================================================
-PHOTO_W, PHOTO_H = 64, 64
-PHOTO_NPKT, PHOTO_PAY = 4, 1024     # 4 包 x 1024 = 4096 字节
+PHOTO_W, PHOTO_H = 640, 480
+PHOTO_PAY  = 1024                       # 每包 payload 字节数 (=512 像素)
+PHOTO_NPKT = (PHOTO_W * PHOTO_H * 2) // PHOTO_PAY   # 600 包
+
+def _rgb565_to_888(v):
+    r5 = (v >> 11) & 0x1F
+    g6 = (v >> 5)  & 0x3F
+    b5 =  v        & 0x1F
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
 
 def cmd_photo(sector, save_path="photo64.png"):
-    """触发 FPGA 读 TF 卡 BMP, 接收 4 个 UDP 包重组 64x64 RGB222 -> PNG"""
-    # 先绑定接收 socket, 防止丢包 (SD 读卡有几百 ms 延迟)
+    """触发 FPGA 流式读 TF 卡 BMP, 接收 600 个 UDP 包重组 640x480 RGB565 -> PNG"""
+    # 收发共用同一 socket (绑 PC_IP:PC_PORT), 否则 send_cmd 另开的同端口 socket
+    # 会抢走 FPGA 最先回来的那批包并丢弃 -> 表现为开头若干包系统性丢失
     r = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     r.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    r.bind(('0.0.0.0', PC_PORT))
-    r.settimeout(8.0)               # 首包等久点 (等读卡)
-    # 发送 CMD_SD_PHOTO (0x50) + 4 字节起始扇区 (大端)
-    sec = int(sector) & 0xFFFFFFFF
-    send_cmd(0x50, bytes([(sec>>24)&0xFF, (sec>>16)&0xFF, (sec>>8)&0xFF, sec&0xFF]))
-    print(f"[+] CMD_SD_PHOTO sent, start_sector={sec} (0x{sec:08x}); 等待 FPGA 读卡回传...")
-
-    buf = bytearray(PHOTO_W * PHOTO_H)
-    got = [False] * PHOTO_NPKT
-    while not all(got):
+    # 调大接收缓冲, 缓解突发丢包 (默认 ~64KB 太小, 600 包瞬间冲爆)
+    for sz in (16*1024*1024, 8*1024*1024, 4*1024*1024):
         try:
-            data, addr = r.recvfrom(2048)
-        except socket.timeout:
-            print(f"[!] 超时, 已收到包: {[i for i,g in enumerate(got) if g]}"); break
-        r.settimeout(3.0)
-        if len(data) < 7 or data[0] != 0xA5 or data[1] != 0x5A or data[2] != 0x51:
+            r.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, sz); break
+        except OSError:
             continue
-        seq, nseq = data[3], data[4]
-        plen = (data[5] << 8) | data[6]
-        pay = data[5+2 : 5+2+plen]
-        if seq < PHOTO_NPKT and not got[seq]:
-            base = seq * PHOTO_PAY
-            buf[base:base+len(pay)] = pay
-            got[seq] = True
-            print(f"  recv pkt seq={seq}/{nseq} len={plen} from {addr}")
+    try:
+        r.bind((PC_IP, PC_PORT))
+    except OSError as e:
+        print(f"[!!] bind {PC_IP}:{PC_PORT} 失败: {e}")
+        print(f"[!!] 检查: 1) PC IP 是不是 {PC_IP}  2) < 1024 端口需要管理员")
+        sys.exit(1)
+    _arp_warmup()
+    sec = int(sector) & 0xFFFFFFFF
+    sec_payload = bytes([(sec>>24)&0xFF, (sec>>16)&0xFF, (sec>>8)&0xFF, sec&0xFF])
+
+    buf = bytearray(PHOTO_W * PHOTO_H * 2)   # RGB565: 2 字节/像素
+    got = [False] * PHOTO_NPKT
+    ngot = 0
+    MAX_TRIES = 8                            # 仍有零星丢包则重发命令补收
+    for attempt in range(MAX_TRIES):
+        # 每次都重发 CMD_SD_PHOTO (0x50): FPGA 重读整图并重发全部包, 缺哪补哪
+        send_cmd_on_socket(r, 0x50, sec_payload)
+        tag = "触发" if attempt == 0 else f"补包重传#{attempt}"
+        print(f"[+] CMD_SD_PHOTO {tag}, sector={sec} (0x{sec:08x}); 已收 {ngot}/{PHOTO_NPKT}")
+        r.settimeout(12.0)                   # 首包等久点 (等读卡 SPI)
+        progressed = False
+        while ngot < PHOTO_NPKT:
+            try:
+                data, addr = r.recvfrom(2048)
+            except socket.timeout:
+                break
+            r.settimeout(2.0)
+            # 头 9 字节: A5 5A 51 seqH seqL npktH npktL lenH lenL
+            if len(data) < 9 or data[0] != 0xA5 or data[1] != 0x5A or data[2] != 0x51:
+                continue
+            seq  = (data[3] << 8) | data[4]
+            plen = (data[7] << 8) | data[8]
+            pay  = data[9 : 9+plen]
+            if seq < PHOTO_NPKT and not got[seq]:
+                base = seq * PHOTO_PAY
+                buf[base:base+len(pay)] = pay
+                got[seq] = True
+                ngot += 1
+                progressed = True
+                if ngot % 100 == 0 or ngot == PHOTO_NPKT:
+                    print(f"  recv {ngot}/{PHOTO_NPKT} pkts")
+        if ngot == PHOTO_NPKT:
+            print(f"[+] 全部 {PHOTO_NPKT} 包收齐")
+            break
+        miss = [i for i,g in enumerate(got) if not g]
+        print(f"[!] 本轮后仍缺 {len(miss)} 包: {miss[:20]}{'...' if len(miss)>20 else ''}")
+        if not progressed and attempt > 0:
+            print("[!] 本轮无新包到达, 可能链路/触发异常, 继续重试...")
+    else:
+        print(f"[!] 重试 {MAX_TRIES} 次仍缺 {PHOTO_NPKT-ngot} 包, 用已收部分出图 (缺块显示为脏数据)")
     r.close()
 
-    # ASCII 预览
-    chars = " .:-=+*#%@"
-    for y in range(0, PHOTO_H, 2):     # 隔行, 终端不至于太高
-        row = ""
-        for x in range(PHOTO_W):
-            v6 = buf[y*PHOTO_W + x] & 0x3F
-            lum = ((v6>>4)&3) + ((v6>>2)&3) + (v6&3)
-            row += chars[min(lum, 9)]
-        print(row)
+    # 自动字节对齐 + 解码出图 (修正硬件 HDR_LEN 与实际 BMP 头不符造成的错位)
+    _decode_with_autoalign(buf, save_path)
 
-    # 存 PNG (有 PIL 用 PIL, 否则存 PPM)
+
+def _shifted_pair(buf, i, delta):
+    """取第 i 个像素的 (hi, lo), 整体字节偏移 delta (可正可负)"""
+    a = 2*i + delta
+    n = len(buf)
+    hi = buf[a]   if 0 <= a   < n else 0
+    lo = buf[a+1] if 0 <= a+1 < n else 0
+    return hi, lo
+
+def _align_score(buf, delta):
+    """对齐质量评分: 绿色通道相邻像素总变差, 越小越干净 (错位会让高频噪声暴增).
+    为速度只在若干行上每隔几个像素采样。"""
+    tv = 0
+    step = 5
+    for row in range(40, PHOTO_H, 53):          # 抽若干行
+        base = row * PHOTO_W
+        prev = None
+        for col in range(0, PHOTO_W, step):
+            i = base + col
+            hi, lo = _shifted_pair(buf, i, delta)
+            g = (((hi << 8) | lo) >> 5) & 0x3F   # 绿色 6bit
+            if prev is not None:
+                tv += abs(g - prev)
+            prev = g
+    return tv
+
+def _decode_with_autoalign(buf, save_path):
+    # 在 -6..+6 字节范围内找总变差最小的偏移
+    cands = list(range(-6, 7))
+    scores = [(_align_score(buf, d), d) for d in cands]
+    scores.sort()
+    best_score, best_delta_sw = scores[0]
+    zero_score = next(s for s,d in scores if d == 0)
+    # 诊断打印对齐搜索结果, 但固定用 delta=0 (蓝色位宽修复后字节本就对齐;
+    # 奇数 delta 会打乱 RGB565 的 5-6-5 位边界, 反而把颜色搞乱)。
+    print(f"[i] 字节对齐(仅诊断): 搜索最佳 delta={best_delta_sw} 变差 {best_score} vs delta=0 的 {zero_score}; 实际固定用 delta=0")
+    best_delta = 0
+
     try:
         from PIL import Image
         img = Image.new("RGB", (PHOTO_W, PHOTO_H))
         px = img.load()
-        for y in range(PHOTO_H):
-            for x in range(PHOTO_W):
-                v6 = buf[y*PHOTO_W + x] & 0x3F
-                px[x, y] = (((v6>>4)&3)*85, ((v6>>2)&3)*85, (v6&3)*85)
-        img = img.resize((PHOTO_W*6, PHOTO_H*6), Image.NEAREST)
+        for i in range(PHOTO_W * PHOTO_H):
+            hi, lo = _shifted_pair(buf, i, best_delta)
+            col = i % PHOTO_W
+            y   = PHOTO_H - 1 - (i // PHOTO_W)   # BMP 自底向上 -> 翻转
+            px[col, y] = _rgb565_to_888((hi << 8) | lo)
         img.save(save_path)
-        print(f"[+] saved -> {save_path}")
+        print(f"[+] saved -> {save_path} ({PHOTO_W}x{PHOTO_H}, delta={best_delta})")
     except ImportError:
         ppm = save_path.rsplit('.',1)[0] + ".ppm"
         with open(ppm, "w") as f:
             f.write(f"P3\n{PHOTO_W} {PHOTO_H}\n255\n")
-            for y in range(PHOTO_H):
-                for x in range(PHOTO_W):
-                    v6 = buf[y*PHOTO_W + x] & 0x3F
-                    f.write(f"{((v6>>4)&3)*85} {((v6>>2)&3)*85} {(v6&3)*85}\n")
+            for row in range(PHOTO_H):
+                src_row = PHOTO_H - 1 - row
+                for col in range(PHOTO_W):
+                    i = src_row * PHOTO_W + col
+                    hi, lo = _shifted_pair(buf, i, best_delta)
+                    cr, cg, cb = _rgb565_to_888((hi << 8) | lo)
+                    f.write(f"{cr} {cg} {cb}\n")
         print(f"[+] 未装 PIL, 存为 {ppm} (pip install pillow 可直接出 PNG)")
 
 def make_bmp(infile, outfile="out.bmp"):
-    """把任意图片转成 640x480 24位 BMP, 供拷进 TF 卡 (硬件按 640x480 降采样)"""
+    """把任意图片转成 640x480 24位 BMP, 供拷进 TF 卡 (硬件全分辨率流式回传)"""
     try:
         from PIL import Image
     except ImportError:

@@ -966,11 +966,12 @@ sd_ctrl_top u_sd_ctrl_top (
     .sd_init_done   (sd_init_done   )
 );
 
-// --- BMP 像素流 -> 64x64 RGB222 降采样 (sd_clk_ref 域) ---
-wire        ph_bram_wen;
-wire [11:0] ph_bram_waddr;
-wire [5:0]  ph_bram_wdata;
-wire        frame_ready_sd;
+// --- BMP 像素流 -> 全分辨率 RGB565 流式写入异步 FIFO (sd_clk_ref 域) ---
+wire        ph_fifo_wen;
+wire [15:0] ph_fifo_wdata;
+wire [11:0] ph_fifo_wused;
+wire        ph_fifo_wfull;
+wire        photo_done_sd;
 sd_photo64 u_sd_photo64 (
     .clk          (sd_clk_ref     ),
     .rst_n        (rst_n          ),
@@ -981,53 +982,57 @@ sd_photo64 u_sd_photo64 (
     .rd_val_data  (sd_rd_val_data ),
     .rd_start_en  (sd_rd_start_en ),
     .rd_sec_addr  (sd_rd_sec_addr ),
-    .bram_wen     (ph_bram_wen    ),
-    .bram_waddr   (ph_bram_waddr  ),
-    .bram_wdata   (ph_bram_wdata  ),
-    .frame_ready  (frame_ready_sd )
+    .fifo_wen     (ph_fifo_wen    ),
+    .fifo_wdata   (ph_fifo_wdata  ),
+    .fifo_wused   (ph_fifo_wused  ),
+    .done         (photo_done_sd  ),
+    .busy         (photo_prod_busy)
 );
 
-// --- 64x64 双时钟 BRAM ---
-wire [11:0] ph_bram_raddr;
-wire [5:0]  ph_bram_rdata;
-dpram_64x64 u_dpram_64x64 (
-    .wclk  (sd_clk_ref    ),
-    .wen   (ph_bram_wen   ),
-    .waddr (ph_bram_waddr ),
-    .wdata (ph_bram_wdata ),
-    .rclk  (udp_clk       ),
-    .raddr (ph_bram_raddr ),
-    .rdata (ph_bram_rdata )
+// FIFO flush 门控: 只在生产者/消费者空闲时清空, 屏蔽 8x 重复命令/补包重传的多余脉冲
+wire photo_prod_busy;
+wire fifo_wflush = sd_start    & ~photo_prod_busy;
+wire fifo_rflush = sd_photo_req & ~photo_busy;
+
+// --- 双时钟异步 FIFO (SD 域写 -> udp 域读) ---
+wire        ph_fifo_ren;
+wire [15:0] ph_fifo_rdata;
+wire [11:0] ph_fifo_rused;
+wire        ph_fifo_rempty;
+dpram_64x64 #(.DW(16), .AW(11)) u_dpram_64x64 (
+    .wclk   (sd_clk_ref    ),
+    .wrst_n (rst_n         ),
+    .wflush (fifo_wflush   ),   // 生产者 start(SD域,空闲时): 清空写端, 保证每次传输 FIFO 空
+    .wen    (ph_fifo_wen   ),
+    .wdata  (ph_fifo_wdata ),
+    .wfull  (ph_fifo_wfull ),
+    .wused  (ph_fifo_wused ),
+    .rclk   (udp_clk       ),
+    .rrst_n (rst_n         ),
+    .rflush (fifo_rflush   ),   // 消费者 start(udp域,空闲时): 清空读端, 与写端对齐到 pix0
+    .ren    (ph_fifo_ren   ),
+    .rdata  (ph_fifo_rdata ),
+    .rempty (ph_fifo_rempty),
+    .rused  (ph_fifo_rused )
 );
 
-// --- 跨时钟: frame_ready(sd_clk_ref 脉冲) -> udp_clk 域 ---
-reg        fr_tgl;
-always @(posedge sd_clk_ref or negedge rst_n) begin
-    if (!rst_n) fr_tgl <= 1'b0;
-    else if (frame_ready_sd) fr_tgl <= ~fr_tgl;
-end
-reg [2:0] fr_sync;
-always @(posedge udp_clk or negedge rst_n) begin
-    if (!rst_n) fr_sync <= 3'd0;
-    else        fr_sync <= {fr_sync[1:0], fr_tgl};
-end
-wire frame_ready_udp = fr_sync[2] ^ fr_sync[1];
-
-// --- 多包照片发送 ---
+// --- 全分辨率照片流式发送 (start 直接用 udp 域的 sd_photo_req 脉冲) ---
 wire [7:0]  ph_app_tx_data;
 wire        ph_app_tx_data_valid;
 wire [15:0] ph_udp_data_length;
 wire        ph_app_tx_request;
 wire        photo_busy;
 photo_tx #(
-    .PKT_PAY (16'd1024),
-    .NPKT    (8'd4    )
+    .PKT_PAY  (16'd1024),
+    .NPKT     (16'd600 ),
+    .START_TH (12'd512 )
 ) u_photo_tx (
     .clk               (udp_clk             ),
     .rst_n             (rst_n               ),
-    .frame_ready       (frame_ready_udp     ),
-    .bram_raddr        (ph_bram_raddr       ),
-    .bram_rdata        (ph_bram_rdata       ),
+    .start             (sd_photo_req        ),
+    .fifo_ren          (ph_fifo_ren         ),
+    .fifo_rdata        (ph_fifo_rdata       ),
+    .fifo_rused        (ph_fifo_rused       ),
     .udp_tx_ready      (udp_tx_ready        ),
     .app_tx_ack        (app_tx_ack          ),
     .app_tx_data       (ph_app_tx_data      ),
@@ -1036,6 +1041,20 @@ photo_tx #(
     .app_tx_request    (ph_app_tx_request   ),
     .busy              (photo_busy          )
 );
+
+// --- 跨时钟: 生产者 done(sd_clk_ref 脉冲) -> udp 域电平 (供 LED4 探针) ---
+reg pd_sticky_sd;
+always @(posedge sd_clk_ref or negedge rst_n) begin
+    if (!rst_n)             pd_sticky_sd <= 1'b0;
+    else if (sd_start)      pd_sticky_sd <= 1'b0;   // 新一次读卡清零
+    else if (photo_done_sd) pd_sticky_sd <= 1'b1;
+end
+reg [2:0] pd_sync;
+always @(posedge udp_clk or negedge rst_n) begin
+    if (!rst_n) pd_sync <= 3'd0;
+    else        pd_sync <= {pd_sync[1:0], pd_sticky_sd};
+end
+wire frame_ready_udp = pd_sync[2];   // 电平: 整图取数完成 (沿用旧名供 LED 探针)
 
 // --- TX 多路选择: photo 占用时走 photo_tx, 否则走 img_tx_rom ---
 assign app_tx_data         = photo_busy ? ph_app_tx_data       : img_app_tx_data;
