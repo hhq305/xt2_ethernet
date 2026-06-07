@@ -49,12 +49,15 @@ set DESIGN_FILES {
     src/app/cmd_decode.v
     src/app/seg_scan.v
     src/app/cam_to_bram.v
+    src/app/img_rx_fb.v
+    src/app/sdram_img_fb.v
     src/app/img_tx_rom.v
     src/app/sobel_ondemand.v
     src/app/img_proc_inline.v
     src/app/sd_photo64.v
     src/app/photo_tx.v
     src/app/dpram_64x64.v
+    src/mem/framebuf.v
     src/top/udp_transmit_test.v
 }
 foreach f $DESIGN_FILES {
@@ -71,7 +74,29 @@ foreach f {
     add_file -type verilog "$PROJ_ROOT/$f"
 }
 
-# 3.2 vendor app 层 (VGA 显示 + UDP 解包写 BRAM)
+# 3.1c vendor SDRAM 控制器 (EG_PHY_SDRAM_2M_32 + encrypted controller)
+foreach f {
+    global_def.v
+    sdr_as_ram.enc.v
+    sdr_init_ref.enc.v
+    sdr_wrrd.enc.v
+    sdram.v
+} {
+    add_file -type verilog "$PROJ_ROOT/src/vendor/sdram/$f"
+}
+
+# 3.1d vendor SDRAM framebuffer FIFO/burst 控制器 (from HX4S20 reference)
+foreach f {
+    afifo_16_32_256.v
+    afifo_32_16_256.v
+    frame_fifo_write.v
+    frame_fifo_read.v
+    frame_read_write.v
+} {
+    add_file -type verilog "$PROJ_ROOT/src/vendor/sdram_fb/$f"
+}
+
+# 3.2 vendor app 层 (VGA 显示 + UDP 解包写 SDRAM framebuffer)
 foreach f {
     src/vendor/app/addr_crt.v
     src/vendor/app/vga_disp.v
@@ -128,8 +153,8 @@ read_adc "$PROJ_ROOT/sdc/xt2.adc"
 # -------- 5. 顶层模块 / 工程参数 --------
 set_top_model  $TOPMODULE
 set_option     -top $TOPMODULE
-# 让 `include "pkt_fmt.vh" 找到 src/app/pkt_fmt.vh
-set_option     -include_path "$PROJ_ROOT/src/app"
+# 让 `include "pkt_fmt.vh" / "global_def.v" 找到对应头文件
+set_option     -include_path "$PROJ_ROOT/src/app;$PROJ_ROOT/src/vendor/sdram"
 
 # -------- 6. 自动化流程 (read_design → bitgen) --------
 puts "##############  STEP 1/6 elaborate  ##############"

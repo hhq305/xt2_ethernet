@@ -66,6 +66,14 @@
 //   照片功能已验证通过, 平时关闭, 让 LED 恢复 PC 命令控制.
 // =============================================================
 //  `define SD_PHOTO_PROBE
+// =============================================================
+// 图像上传诊断 : 判断 sendvga_bars/sendvga 的 CMD_IMG_FRAME 是否到达
+//   LED1 = 任意 UDP 字节到达 app 层
+//   LED2 = 解析到 A5 5A 10 图像包头
+//   LED3 = 进入图像 payload 的 FLAG 字节
+//   LED4 = 看到最终包 FLAG[0]=1
+// =============================================================
+//  `define IMG_RX_PROBE
 module udp_transmit_test(
         input               key1,
         input               key2,
@@ -116,16 +124,16 @@ parameter  DST_IP_ADDRESS     = 32'hc0a8f002;
 /*------------------------------*/
 /*------------------------------*/
 
-wire         app_rx_data_valid;//synthesis keep 
-wire [7:0]   app_rx_data;//synthesis keep       
-wire [15:0]  app_rx_data_length;//synthesis keep
+wire         app_rx_data_valid; 
+wire [7:0]   app_rx_data;       
+wire [15:0]  app_rx_data_length;
 wire [15:0]  app_rx_port_num;
 
 wire         udp_tx_ready;
 wire         app_tx_ack;
-wire         app_tx_data_request;//synthesis keep
-wire         app_tx_data_valid;//synthesis keep 
-wire [7:0]   app_tx_data;//synthesis keep       
+wire         app_tx_data_request;
+wire         app_tx_data_valid; 
+wire [7:0]   app_tx_data;       
 wire  [15:0] udp_data_length;
 
 wire  [7:0]  tpg_data           ;
@@ -141,15 +149,15 @@ wire [47:0] pause_source_addr;
 wire [47:0] unicast_address;
 wire [19:0] mac_cfg_vector;  
 
-wire        temac_tx_ready;//synthesis keep
-wire        temac_tx_valid;//synthesis keep
-wire [7:0]  temac_tx_data;//synthesis keep 
+wire        temac_tx_ready;
+wire        temac_tx_valid;
+wire [7:0]  temac_tx_data; 
 wire        temac_tx_sof;
 wire        temac_tx_eof;
             
 wire        temac_rx_ready;
-wire        temac_rx_valid;//synthesis keep
-wire [7:0]  temac_rx_data;//synthesis keep 
+wire        temac_rx_valid;
+wire [7:0]  temac_rx_data; 
 wire        temac_rx_sof;
 wire        temac_rx_eof;
 
@@ -164,16 +172,16 @@ wire        rx_clk_en_int;
 wire        tx_clk_int; 
 wire        tx_clk_en_int;
 
-wire        temac_clk;//synthesis keep
-wire        udp_clk;  //synthesis keep
-wire        temac_clk90;//synthesis keep
+wire        temac_clk;
+wire        udp_clk;
+wire        temac_clk90;
 wire        clk_125_out;
 wire        clk_12_5_out;
 wire        clk_1_25_out;
-wire        rx_valid;//synthesis keep   
-wire [7:0]  rx_data;//synthesis keep    
-wire [7:0]  tx_data; //synthesis keep   
-wire        tx_valid; //synthesis keep  
+wire        rx_valid;   
+wire [7:0]  rx_data;    
+wire [7:0]  tx_data;
+wire        tx_valid;
 wire        tx_rdy;         
 wire        tx_collision;   
 wire        tx_retransmit;
@@ -209,25 +217,25 @@ end
 //=========================================================
 //debug signal
 //=========================================================
-reg       debug_app_rx_data_valid   ;//synthesis keep
-reg [7:0] debug_app_rx_data         ;//synthesis keep
-reg       debug_app_tx_data_valid   ;//synthesis keep
-reg [7:0] debug_app_tx_data         ;//synthesis keep
-reg       debug_temac_tx_valid      ;//synthesis keep
-reg [7:0] debug_temac_tx_data       ;//synthesis keep
-reg       debug_temac_rx_valid      ;//synthesis keep
-reg [7:0] debug_temac_rx_data       ;//synthesis keep
-reg       debug_rx_valid            ;//synthesis keep
-reg [7:0] debug_rx_data             ;//synthesis keep
-reg       debug_tx_valid            ;//synthesis keep
-reg [7:0] debug_tx_data             ;//synthesis keep
+reg       debug_app_rx_data_valid   ;
+reg [7:0] debug_app_rx_data         ;
+reg       debug_app_tx_data_valid   ;
+reg [7:0] debug_app_tx_data         ;
+reg       debug_temac_tx_valid      ;
+reg [7:0] debug_temac_tx_data       ;
+reg       debug_temac_rx_valid      ;
+reg [7:0] debug_temac_rx_data       ;
+reg       debug_rx_valid            ;
+reg [7:0] debug_rx_data             ;
+reg       debug_tx_valid            ;
+reg [7:0] debug_tx_data             ;
 
-reg [31:0] debug_frame_temac_cnt_rx ;//synthesis keep
-reg [31:0] debug_frame_app_cnt_rx   ;//synthesis keep
-reg [31:0] debug_frame_fifo_cnt_rx  ;//synthesis keep
-reg [31:0] debug_frame_temac_cnt_tx ;//synthesis keep
-reg [31:0] debug_frame_app_cnt_tx   ;//synthesis keep
-reg [31:0] debug_frame_fifo_cnt_tx  ;//synthesis keep
+reg [31:0] debug_frame_temac_cnt_rx ;
+reg [31:0] debug_frame_app_cnt_rx   ;
+reg [31:0] debug_frame_fifo_cnt_rx  ;
+reg [31:0] debug_frame_temac_cnt_tx ;
+reg [31:0] debug_frame_app_cnt_tx   ;
+reg [31:0] debug_frame_fifo_cnt_tx  ;
 
 wire udp_debug_out;
 // wire debug_out;
@@ -506,14 +514,6 @@ assign  mac_cfg_vector    = {1'b0,2'b00,TRI_speed,8'b00000010,7'b0000010}; //地
 //test dynamic_local_ip_address
 //-----------------------------------------------------
 
-//参数定义
-reg [32:0] cnt0;
-wire      end_cnt0;
-wire      add_cnt0;
-reg [7:0] cnt1;
-wire      end_cnt1;
-wire      add_cnt1;
-
 // 上电自动复位 (POR): 开机后自动拉低 rst_n 约 1ms 再释放, 无需手按 KEY2
 reg [15:0] por_cnt = 16'd0;
 reg        por_n   = 1'b0;
@@ -522,58 +522,10 @@ always @(posedge udp_clk) begin
     por_n <= (por_cnt == 16'hFFFF);
 end
 wire rst_n = key2 & por_n;    // KEY2 手动复位 + 上电自动复位 (active-low)
-//计数器2
- always @(posedge udp_clk or negedge rst_n)begin
-     if(!rst_n)begin
-         cnt0 <= 0;
-     end
-     else if(add_cnt0)begin
-         if(end_cnt0)
-             cnt0 <= 0;
-         else
-             cnt0 <= cnt0 + 1;
-     end
- end
 
- assign add_cnt0 = 1;
- assign end_cnt0 = add_cnt0 && 0;
-
- always @(posedge udp_clk or negedge rst_n)begin 
-     if(!rst_n)begin
-         cnt1 <= 0;
-     end
-     else if(add_cnt1)begin
-         if(end_cnt1)
-             cnt1 <= 0;
-         else
-             cnt1 <= cnt1 + 1;
-     end
- end
-
- assign add_cnt1 = end_cnt0;
- assign end_cnt1 = add_cnt1 && cnt1== 15;  
-
-reg [31:0]  input_local_ip_address;
-reg         input_local_ip_address_valid;
-
-always@(posedge udp_clk or posedge reset)
-begin
-    if(reset) 
-    begin
-        input_local_ip_address      <= LOCAL_IP_ADDRESS;
-        input_local_ip_address_valid<= 1'b0;
-    end
-    else if(end_cnt0 == 1'b1)
-    begin
-        input_local_ip_address      <= {LOCAL_IP_ADDRESS[31:8],cnt1};
-        input_local_ip_address_valid<= 1'b1;
-    end
-    else
-    begin
-        input_local_ip_address      <= input_local_ip_address;
-        input_local_ip_address_valid<= 1'b1;
-    end
-end
+// 固定本机 IP/端口，裁剪原 demo 的动态 IP 扫描计数器，节省 MSlice。
+wire [31:0] input_local_ip_address       = LOCAL_IP_ADDRESS;
+wire        input_local_ip_address_valid = 1'b1;
 
 // =============================================================
 // 选题二 基础要求 ① : UDP 命令解析 → LED  (替换原 demo 的 IP-LED)
@@ -585,20 +537,23 @@ wire        img_req_pulse;
 wire        cam_en;
 wire        sd_photo_req;          // 扩展⑥ : udp_clk 域单脉冲
 wire [31:0] sd_sec_addr_cmd;       // 扩展⑥ : BMP 起始扇区号
+// 基础要求 ①：恢复 PC UDP 命令控制 LED / 数码管。
+// cmd_decode 是轻量字节流解析器；相比 SDRAM/VGA 主路径资源占用很小，
+// 可以保留，为后续“全部基础功能 + 扩展 2”继续扩展命令入口。
 cmd_decode u_cmd_decode (
-    .clk            (udp_clk),
-    .rst_n          (rst_n),                    // = key2
-    .rx_data        (app_rx_data),
-    .rx_valid       (app_rx_data_valid),
-    .rx_length      (app_rx_data_length),
-    .led_o          (led_eth8),
-    .seg_bcd_o      (seg_bcd_eth),
-    .proc_mode_o    (proc_mode_eth),
-    .img_req_pulse_o(img_req_pulse),
-    .cam_en_o       (cam_en),
-    .sd_photo_req_o (sd_photo_req),
-    .sd_sec_addr_o  (sd_sec_addr_cmd),
-    .ack_pulse_o    ()
+    .clk             (udp_clk),
+    .rst_n           (rst_n),
+    .rx_data         (app_rx_data),
+    .rx_valid        (app_rx_data_valid),
+    .rx_length       (app_rx_data_length),
+    .led_o           (led_eth8),
+    .seg_bcd_o       (seg_bcd_eth),
+    .proc_mode_o     (proc_mode_eth),
+    .img_req_pulse_o (img_req_pulse),
+    .cam_en_o        (cam_en),
+    .sd_photo_req_o  (sd_photo_req),
+    .sd_sec_addr_o   (sd_sec_addr_cmd),
+    .ack_pulse_o     ()
 );
 // === LED 映射 (引脚已确认) ===
 //  led[0] = A4  = 物理 LED1
@@ -708,6 +663,88 @@ end
 
 assign led = {probe_led_cmd, probe_magic1, probe_magic0, probe_any_byte};
 `else
+`ifdef IMG_RX_PROBE
+// =============================================================
+// 图像上传计数探针 (按 KEY1 清零)
+//   LED 以二进制粗略显示已接收 RGB 像素数量:
+//   LED1 >= 10000, LED2 >= 30000, LED3 >= 60000, LED4 >= 76800
+//   如果 LED4 亮而 VGA 仍红色，说明包到达 img_rx_fb，但 sdram_img_fb 没有接收写入。
+// =============================================================
+reg [20:0] imgp_pix_cnt;
+reg        imgp_in_frame;
+reg [1:0]  imgp_rgb_phase;
+reg [2:0]  imgp_st;
+reg [7:0]  imgp_cmd;
+reg [15:0] imgp_len;
+reg [15:0] imgp_payload_left;
+localparam IP_IDLE=3'd0, IP_M0=3'd1, IP_CMD=3'd2, IP_LH=3'd3,
+           IP_LL=3'd4, IP_FLAG=3'd5, IP_SKIP=3'd6;
+
+always @(posedge udp_clk or negedge key1) begin
+    if (!key1) begin
+        imgp_pix_cnt      <= 21'd0;
+        imgp_in_frame     <= 1'b0;
+        imgp_rgb_phase    <= 2'd0;
+        imgp_st           <= IP_IDLE;
+        imgp_cmd          <= 8'h00;
+        imgp_len          <= 16'd0;
+        imgp_payload_left <= 16'd0;
+    end else if (app_rx_data_valid) begin
+        case (imgp_st)
+            IP_IDLE: imgp_st <= (app_rx_data == 8'hA5) ? IP_M0 : IP_IDLE;
+            IP_M0: begin
+                if (app_rx_data == 8'h5A)
+                    imgp_st <= IP_CMD;
+                else
+                    imgp_st <= (app_rx_data == 8'hA5) ? IP_M0 : IP_IDLE;
+            end
+            IP_CMD: begin
+                imgp_cmd <= app_rx_data;
+                imgp_st <= IP_LH;
+            end
+            IP_LH: begin
+                imgp_len[15:8] <= app_rx_data;
+                imgp_st <= IP_LL;
+            end
+            IP_LL: begin
+                imgp_len[7:0] <= app_rx_data;
+                imgp_payload_left <= {imgp_len[15:8], app_rx_data};
+                if (imgp_cmd == 8'h10 && {imgp_len[15:8], app_rx_data} >= 16'd5)
+                    imgp_st <= IP_FLAG;
+                else
+                    imgp_st <= IP_SKIP;
+            end
+            IP_FLAG: begin
+                if (app_rx_data[0]) begin
+                    imgp_in_frame <= 1'b0;
+                end else begin
+                    imgp_in_frame <= 1'b1;
+                    imgp_rgb_phase <= 2'd0;
+                end
+                imgp_payload_left <= imgp_payload_left - 1'b1;
+                imgp_st <= IP_SKIP;
+            end
+            IP_SKIP: begin
+                if (imgp_in_frame && imgp_payload_left > 16'd0) begin
+                    if (imgp_rgb_phase == 2'd2) begin
+                        imgp_pix_cnt <= imgp_pix_cnt + 1'b1;
+                        imgp_rgb_phase <= 2'd0;
+                    end else begin
+                        imgp_rgb_phase <= imgp_rgb_phase + 1'b1;
+                    end
+                end
+                if (imgp_payload_left <= 16'd1)
+                    imgp_st <= IP_IDLE;
+                else
+                    imgp_payload_left <= imgp_payload_left - 1'b1;
+            end
+            default: imgp_st <= IP_IDLE;
+        endcase
+    end
+end
+assign led = {imgp_pix_cnt >= 21'd76800, imgp_pix_cnt >= 21'd60000,
+              imgp_pix_cnt >= 21'd30000, imgp_pix_cnt >= 21'd10000};
+`else
 `ifdef SD_PHOTO_PROBE
 // =============================================================
 // SD 照片分阶段 sticky 探针 (按 KEY1 清零)
@@ -752,12 +789,13 @@ assign led = led_eth8[3:0];
 `endif
 `endif
 `endif
+`endif
 
-// 选题二 扩展① : 数码管扫描显示 (复用 udp_clk, 25/50MHz 均可)
+// 基础要求 ①：PC 命令控制 4 位数码管显示。
 seg_scan u_seg_scan (
-    .clk    (udp_clk),
+    .clk    (clk_25_out),
     .rst_n  (rst_n),
-    .bcd_in (seg_bcd_eth[15:0]),   // 取低 16 bit = 4 位 16 进制数字
+    .bcd_in (seg_bcd_eth[15:0]),
     .seg    (seg),
     .en     (seg_en)
 );
@@ -778,84 +816,52 @@ end
 
 //-----------------------------------------------------
 
-// 扩展② : 暴露给 img_tx_rom 的图像写信号
+// PC 图片上传到 VGA 专用精简路径：
+// 只保留 UDP 接收、img_rx_fb、EMB 帧缓存和 VGA 输出。
+// 摄像头、TF 卡照片回传、FPGA->PC 图像回传会额外占用大量 EMB，
+// 在本任务中不需要，先裁剪掉以满足 EG4S20/HX4S20 的 64 个 EMB 限制。
 wire        img_wr_en;
 wire [7:0]  img_wr_addr;
 wire [5:0]  img_wr_data;
-
-// 扩展⑤ : OV5640 摄像头 -> 16x16 RGB222 镜像
-wire        cam_init_done;
-wire        cmos_frame_vsync;
-wire        cmos_frame_href;
-wire        cmos_frame_valid;
-wire [15:0] cmos_frame_data;
 wire [7:0]  cam_rd_addr;
-wire [5:0]  cam_rd_data;
+wire [5:0]  cam_rd_data = 6'd0;
 
-ov5640_dri u_ov5640 (
-    .clk              (clk_25),               // 50MHz 板载晶振
-    .rst_n            (rst_n),
-    .cam_pclk         (cam_pclk),
-    .cam_vsync        (cam_vsync),
-    .cam_href         (cam_href),
-    .cam_data         (cam_data),
-    .cam_rst_n        (cam_rst_n),
-    .cam_pwdn         (cam_pwdn),
-    .cam_scl          (cam_scl),
-    .cam_sda          (cam_sda),
-    .cmos_h_pixel     (13'd1024),
-    .cmos_v_pixel     (13'd768),
-    .total_h_pixel    (13'd2240),
-    .total_v_pixel    (13'd1272),
-    .capture_start    (cam_en),
-    .cam_init_done    (cam_init_done),
-    .cmos_frame_vsync (cmos_frame_vsync),
-    .cmos_frame_href  (cmos_frame_href),
-    .cmos_frame_valid (cmos_frame_valid),
-    .cmos_frame_data  (cmos_frame_data)
-);
+// 未使用外设给安全默认电平，避免端口悬空。
+assign cam_rst_n = 1'b0;
+assign cam_pwdn  = 1'b1;
+assign cam_scl   = 1'b1;
+assign cam_sda   = 1'bz;
+assign sd_clk    = 1'b0;
+assign sd_cs     = 1'b1;
+assign sd_mosi   = 1'b1;
 
-cam_to_bram u_cam_to_bram (
-    .cam_pclk         (cam_pclk),
-    .rst_n            (rst_n),
-    .cmos_frame_vsync (cmos_frame_vsync),
-    .cmos_frame_href  (cmos_frame_href),
-    .cmos_frame_valid (cmos_frame_valid),
-    .cmos_frame_data  (cmos_frame_data),
-    .rd_addr          (cam_rd_addr),
-    .rd_data          (cam_rd_data)
-);
-
-//app
+// app
 app u_app (
     .sys_clk                    (clk_25                 ),
     .udp_rx_clk                 (udp_clk                ),
     .udp_tx_clk                 (udp_clk                ),
-    .reset                      (key2                   ),
+    .reset                      (rst_n                  ),
+    .sdr_clk                    (clk_125_out            ),
+    .sdr_clk_sft                (temac_clk90            ),
+    .sdr_rst                    (~rst_n | reset_reg     ),
+    .sdr_init_done              (                       ),
+    .vga_underflow              (                       ),
     .app_rx_data_valid          (app_rx_data_valid      ),
     .app_rx_data                (app_rx_data            ),
     .app_rx_data_length         (app_rx_data_length     ),
     .app_rx_port_num            (app_rx_port_num        ),
-    .proc_mode_i                (proc_mode_eth          ),   // 扩展④
-    .wr_en_o                    (img_wr_en              ),   // 扩展②
+    .proc_mode_i                (proc_mode_eth          ),
+    .wr_en_o                    (img_wr_en              ),
     .wr_addr_o                  (img_wr_addr            ),
     .wr_data_o                  (img_wr_data            ),
-    .cam_en_i                   (cam_en                 ),   // 扩展⑤
+    .cam_en_i                   (cam_en                 ),
     .cam_rd_addr_o              (cam_rd_addr            ),
     .cam_rd_data_i              (cam_rd_data            ),
-    .VGA_HSYNC	                (VGA_HSYNC              ),
-	.VGA_VSYNC 	                (VGA_VSYNC              ),
-	.VGA_D                      (VGA_D                  ),
+    .VGA_HSYNC                  (VGA_HSYNC              ),
+    .VGA_VSYNC                  (VGA_VSYNC              ),
+    .VGA_D                      (VGA_D                  ),
     .rd_en                      (rd_en                  )
 );
-
-/*vga_bmp u_vga_bmp
-(   .VGA_HSYNC	                (VGA_HSYNC              ),
-	.VGA_VSYNC 	                (VGA_VSYNC              ),
-	.VGA_D                      (VGA_D                  ),
-    .sys_clk                    (clk_25                ),
-    .reset                      (key2                  )
-);*/
 
 clk_gen_rst_gen#(
     .DEVICE         (DEVICE     )
@@ -871,196 +877,11 @@ clk_gen_rst_gen#(
     .clk_25_out     (clk_25_out )
 );
 
-
-udp_data_tpg u1_udp_data_tpg(
-    .clk                (udp_clk            ),
-    .reset              (~key2              ),
-
-    .tpg_data           (tpg_data           ),//数据输出
-    .tpg_data_valid     (tpg_data_valid     ),//数据有效信号
-    .tpg_data_udp_length(tpg_data_udp_length),//数据长度（包含帧头）
-    .tpg_data_done      (tpg_data_done      ),
-    
-    .tpg_data_enable    (phy_reset          ),
-    .tpg_data_header0   (16'haabb           ),//帧头0
-    .tpg_data_header1   (16'hccdd           ),//帧头1
-    .tpg_data_type      (16'ha8b8           ),//数据帧类垿
-    .tpg_data_length    (16'h00ff           ),//数据长度500
-    .tpg_data_num       (16'h000a           ),//产生的帧个数10
-    .tpg_data_ifg       (8'd130             )
-);
-
-//------------------------------------------------------------
-// 选题二 扩展② : FPGA -> PC 主动回传图像 (替换 udp_loopback)
-//------------------------------------------------------------
-wire [7:0]  img_app_tx_data;
-wire        img_app_tx_data_valid;
-wire [15:0] img_udp_data_length;
-wire        img_app_tx_request;
-img_tx_rom #(
-    .PAY_LEN (16'd256)
-) u2_img_tx_rom (
-    .clk                 (udp_clk            ),
-    .rst_n               (rst_n              ),
-    .start               (img_req_pulse      ),
-    .wr_en               (img_wr_en          ),   // 监听 addr_crt 写图像
-    .wr_addr             (img_wr_addr        ),
-    .wr_data             (img_wr_data        ),
-    .udp_tx_ready        (udp_tx_ready       ),
-    .app_tx_ack          (app_tx_ack         ),
-    .app_tx_data         (img_app_tx_data        ),
-    .app_tx_data_valid   (img_app_tx_data_valid  ),
-    .udp_data_length     (img_udp_data_length    ),
-    .app_tx_request      (img_app_tx_request     )
-);
-
-//------------------------------------------------------------
-// 选题二 扩展⑥ : TF 卡 BMP 照片 -> 64x64 RGB222 -> 多包回传
-//------------------------------------------------------------
-// 50MHz 0deg/180deg SD 参考时钟 (由 50MHz 板载晶振 clk_25 生成)
-wire sd_clk_ref;
-wire sd_clk_ref_180;
-pll_50 u_pll_50 (
-    .refclk   (clk_25         ),
-    .reset    (1'b0           ),
-    .extlock  (               ),
-    .clk0_out (sd_clk_ref      ),   // 50MHz 0deg
-    .clk1_out (sd_clk_ref_180  ),   // 50MHz 180deg
-    .clk2_out (               )
-);
-
-// --- 跨时钟: sd_photo_req(udp_clk 脉冲) -> sd_clk_ref 域 start 脉冲 ---
-reg        sd_req_tgl;
-always @(posedge udp_clk or negedge rst_n) begin
-    if (!rst_n) sd_req_tgl <= 1'b0;
-    else if (sd_photo_req) sd_req_tgl <= ~sd_req_tgl;
-end
-reg [2:0] sd_req_sync;
-always @(posedge sd_clk_ref or negedge rst_n) begin
-    if (!rst_n) sd_req_sync <= 3'd0;
-    else        sd_req_sync <= {sd_req_sync[1:0], sd_req_tgl};
-end
-wire sd_start = sd_req_sync[2] ^ sd_req_sync[1];
-
-// --- SD 卡 SPI 顶层 ---
-wire        sd_rd_busy;
-wire        sd_rd_val_en;
-wire [15:0] sd_rd_val_data;
-wire        sd_rd_start_en;
-wire [31:0] sd_rd_sec_addr;
-wire        sd_init_done;
-sd_ctrl_top u_sd_ctrl_top (
-    .clk_ref        (sd_clk_ref     ),
-    .clk_ref_180deg (sd_clk_ref_180 ),
-    .rst_n          (rst_n          ),
-    .sd_miso        (sd_miso        ),
-    .sd_clk         (sd_clk         ),
-    .sd_cs          (sd_cs          ),
-    .sd_mosi        (sd_mosi        ),
-    .wr_busy        (               ),
-    .rd_start_en    (sd_rd_start_en ),
-    .rd_sec_addr    (sd_rd_sec_addr ),
-    .rd_busy        (sd_rd_busy     ),
-    .rd_val_en      (sd_rd_val_en   ),
-    .rd_val_data    (sd_rd_val_data ),
-    .sd_init_done   (sd_init_done   )
-);
-
-// --- BMP 像素流 -> 全分辨率 RGB565 流式写入异步 FIFO (sd_clk_ref 域) ---
-wire        ph_fifo_wen;
-wire [15:0] ph_fifo_wdata;
-wire [11:0] ph_fifo_wused;
-wire        ph_fifo_wfull;
-wire        photo_done_sd;
-sd_photo64 u_sd_photo64 (
-    .clk          (sd_clk_ref     ),
-    .rst_n        (rst_n          ),
-    .start        (sd_start       ),
-    .start_sector (sd_sec_addr_cmd),   // 准静态: 命令早于 start 锁存
-    .rd_busy      (sd_rd_busy     ),
-    .rd_val_en    (sd_rd_val_en   ),
-    .rd_val_data  (sd_rd_val_data ),
-    .rd_start_en  (sd_rd_start_en ),
-    .rd_sec_addr  (sd_rd_sec_addr ),
-    .fifo_wen     (ph_fifo_wen    ),
-    .fifo_wdata   (ph_fifo_wdata  ),
-    .fifo_wused   (ph_fifo_wused  ),
-    .done         (photo_done_sd  ),
-    .busy         (photo_prod_busy)
-);
-
-// FIFO flush 门控: 只在生产者/消费者空闲时清空, 屏蔽 8x 重复命令/补包重传的多余脉冲
-wire photo_prod_busy;
-wire fifo_wflush = sd_start    & ~photo_prod_busy;
-wire fifo_rflush = sd_photo_req & ~photo_busy;
-
-// --- 双时钟异步 FIFO (SD 域写 -> udp 域读) ---
-wire        ph_fifo_ren;
-wire [15:0] ph_fifo_rdata;
-wire [11:0] ph_fifo_rused;
-wire        ph_fifo_rempty;
-dpram_64x64 #(.DW(16), .AW(11)) u_dpram_64x64 (
-    .wclk   (sd_clk_ref    ),
-    .wrst_n (rst_n         ),
-    .wflush (fifo_wflush   ),   // 生产者 start(SD域,空闲时): 清空写端, 保证每次传输 FIFO 空
-    .wen    (ph_fifo_wen   ),
-    .wdata  (ph_fifo_wdata ),
-    .wfull  (ph_fifo_wfull ),
-    .wused  (ph_fifo_wused ),
-    .rclk   (udp_clk       ),
-    .rrst_n (rst_n         ),
-    .rflush (fifo_rflush   ),   // 消费者 start(udp域,空闲时): 清空读端, 与写端对齐到 pix0
-    .ren    (ph_fifo_ren   ),
-    .rdata  (ph_fifo_rdata ),
-    .rempty (ph_fifo_rempty),
-    .rused  (ph_fifo_rused )
-);
-
-// --- 全分辨率照片流式发送 (start 直接用 udp 域的 sd_photo_req 脉冲) ---
-wire [7:0]  ph_app_tx_data;
-wire        ph_app_tx_data_valid;
-wire [15:0] ph_udp_data_length;
-wire        ph_app_tx_request;
-wire        photo_busy;
-photo_tx #(
-    .PKT_PAY  (16'd1024),
-    .NPKT     (16'd600 ),
-    .START_TH (12'd512 )
-) u_photo_tx (
-    .clk               (udp_clk             ),
-    .rst_n             (rst_n               ),
-    .start             (sd_photo_req        ),
-    .fifo_ren          (ph_fifo_ren         ),
-    .fifo_rdata        (ph_fifo_rdata       ),
-    .fifo_rused        (ph_fifo_rused       ),
-    .udp_tx_ready      (udp_tx_ready        ),
-    .app_tx_ack        (app_tx_ack          ),
-    .app_tx_data       (ph_app_tx_data      ),
-    .app_tx_data_valid (ph_app_tx_data_valid),
-    .udp_data_length   (ph_udp_data_length  ),
-    .app_tx_request    (ph_app_tx_request   ),
-    .busy              (photo_busy          )
-);
-
-// --- 跨时钟: 生产者 done(sd_clk_ref 脉冲) -> udp 域电平 (供 LED4 探针) ---
-reg pd_sticky_sd;
-always @(posedge sd_clk_ref or negedge rst_n) begin
-    if (!rst_n)             pd_sticky_sd <= 1'b0;
-    else if (sd_start)      pd_sticky_sd <= 1'b0;   // 新一次读卡清零
-    else if (photo_done_sd) pd_sticky_sd <= 1'b1;
-end
-reg [2:0] pd_sync;
-always @(posedge udp_clk or negedge rst_n) begin
-    if (!rst_n) pd_sync <= 3'd0;
-    else        pd_sync <= {pd_sync[1:0], pd_sticky_sd};
-end
-wire frame_ready_udp = pd_sync[2];   // 电平: 整图取数完成 (沿用旧名供 LED 探针)
-
-// --- TX 多路选择: photo 占用时走 photo_tx, 否则走 img_tx_rom ---
-assign app_tx_data         = photo_busy ? ph_app_tx_data       : img_app_tx_data;
-assign app_tx_data_valid   = photo_busy ? ph_app_tx_data_valid : img_app_tx_data_valid;
-assign udp_data_length     = photo_busy ? ph_udp_data_length   : img_udp_data_length;
-assign app_tx_data_request = photo_busy ? ph_app_tx_request     : img_app_tx_request;
+// FPGA -> PC 图像回传暂时裁剪，节省 MSlice 给 SDRAM RGB444 VGA 主路径。
+assign app_tx_data_request = 1'b0;
+assign app_tx_data_valid   = 1'b0;
+assign app_tx_data         = 8'h00;
+assign udp_data_length     = 16'd0;
 
 //------------------------------------------------------------  
 //UDP
@@ -1179,31 +1000,12 @@ u5_temac_clk_gen(
     .udp_clk_out          (udp_clk                  )
 );
 
-tx_client_fifo #
-(
-    .DEVICE               (DEVICE                   )
-)
-u6_tx_fifo
-(
-    .rd_clk               (tx_clk_int               ),
-    .rd_sreset            (1'b0                    ),
-    .rd_enable            (tx_clk_en_int            ),
-    .tx_data              (tx_data                  ),
-    .tx_data_valid        (tx_valid                 ),
-    .tx_ack               (tx_rdy                   ),
-    .tx_collision         (tx_collision             ),
-    .tx_retransmit        (tx_retransmit            ),
-    .overflow             (                         ),
-                            
-    .wr_clk               (udp_clk                  ),
-    .wr_sreset            (1'b0                    ),
-    .wr_data              (temac_tx_data            ),
-    .wr_sof_n             (temac_tx_sof             ),
-    .wr_eof_n             (temac_tx_eof             ),
-    .wr_src_rdy_n         (temac_tx_valid           ),
-    .wr_dst_rdy_n         (temac_tx_ready           ),//temac_tx_ready
-    .wr_fifo_status       (                         )
-);
+// TX FIFO 裁剪：当前只需要 PC->FPGA 接收图片，不需要 FPGA 主动发包。
+// PC 端脚本已使用静态 ARP，所以上传图片不依赖 FPGA TX/ARP 回复。
+assign tx_data         = 8'h00;
+assign tx_valid        = 1'b0;
+assign temac_tx_ready  = 1'b1;
+
 
 rx_client_fifo# 
 (

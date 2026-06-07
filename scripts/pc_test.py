@@ -5,13 +5,16 @@
 - Ext-1: 7-seg 控制
 - Ext-2: 触发 FPGA 回传图像
 用法:
-    python pc_test.py led 7        # 全亮 3 个 LED
-    python pc_test.py seg 1234     # 数码管显示 1234
-    python pc_test.py pattern checker  # 发送棋盘格图案到 FPGA
-    python pc_test.py pattern gradient # 发送渐变图案到 FPGA
-    python pc_test.py pattern stripes  # 发送条纹图案到 FPGA
-    python pc_test.py img          # 触发图像回传, 接收并打印前 16 字节
-    python pc_test.py mode 0       # 设置 VGA 处理模式 0=RAW 1=GRAY 2=EDGE 3=INVERT
+    python pc_test.py led 7             # 先验证 UDP 收包: 全亮 3 个 LED
+    python pc_test.py seg 1234          # 数码管显示 1234
+    python pc_test.py sendvga_bars 1 0.005 40 # 推荐第一步: 发送 400x288 彩条到 SDRAM 帧缓存, VGA 居中原尺寸显示
+    python pc_test.py sendvga a.jpg 1 0.005 40 # 发送 PC 图片到 FPGA, 400x288 RGB444 SDRAM 帧缓存经 VGA 显示
+    python pc_test.py photo2 1 0.02 20  # 快捷发送 scripts/photo2.jpg 到 VGA
+    python pc_test.py pattern checker   # 旧 16x16 RGB222 测试路径, 不是当前 VGA 帧缓存
+    python pc_test.py pattern gradient  # 旧 16x16 RGB222 测试路径
+    python pc_test.py pattern stripes   # 旧 16x16 RGB222 测试路径
+    python pc_test.py img               # 触发图像回传, 接收并打印前 16 字节
+    python pc_test.py mode 0            # 设置处理模式 0=RAW 1=GRAY 2=EDGE 3=INVERT
 - Ext-6: TF 卡 BMP 照片流式回传 (全分辨率 640x480 RGB565, 600 包)
     python pc_test.py mkbmp a.jpg  # 任意图片 -> 640x480 24位 BMP(out.bmp), 拷进卡
     python pc_test.py findsector 1 # (管理员) 扫描物理盘1, 自动找 BMP 起始扇区
@@ -25,6 +28,12 @@ PC_PORT   = 2                       # 协议栈期望源端口 = 2 (= DST_UDP_PO
 PC_IP     = '192.168.240.2'         # 强制从这张网卡出, 否则 Windows 会选 WLAN/Hyper-V/VPN
 FPGA_MAC  = '00-11-22-33-44-55'     # = verilog LOCAL_MAC_ADDRESS, FPGA 协议栈不回 ARP, 必须静态绑定
 MAGIC0, MAGIC1 = 0xA5, 0x5A
+# SDRAM RGB444 模式：PC 发送 400x288 RGB888，FPGA 转 RGB444 后写 SDRAM，VGA 居中原尺寸显示。
+# 400x288 -> 57600 个 SDRAM word，正好是 256 burst 的整数倍，避免尾 burst 对齐异常。
+VGA_W, VGA_H = 400, 288
+VIEW_W, VIEW_H = 384, 288
+VGA_FB_MODE = 'rgb444'
+IMG_DITHER_MODE = 'none'  # 仅在回退 RGB111 模式时使用；SDRAM RGB444 默认不抖动。
 
 _arp_warmed = False
 
@@ -188,6 +197,181 @@ def cmd_pattern(name):
     img_data = generate_pattern(name)
     send_cmd(0x10, img_data)
     print(f"[+] pattern '{name}' sent (16x16 RGB222, 256 bytes) via CMD_IMG_FRAME")
+
+def _send_vga_pixels(rows, label, repeat=1, gap=0.01, chunk=20):
+    if chunk <= 0 or VGA_W % chunk != 0:
+        print(f"[!!] chunk 必须是 {VGA_W} 的正因数, 例如 10/16/20/32/40/64/80")
+        return
+    if len(rows) != VGA_W * VGA_H:
+        print(f"[!!] rows 长度必须是 {VGA_W * VGA_H}, 当前 {len(rows)}")
+        return
+
+    _arp_warmup()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((PC_IP, PC_PORT))
+    except OSError as e:
+        print(f"[!!] bind {PC_IP}:{PC_PORT} 失败: {e}")
+        sys.exit(1)
+
+    # CMD_IMG_FRAME end marker: LEN=5, payload 只有 FLAG/Y/X，没有 RGB 数据。
+    # 每一帧后都发结束标记，repeat>1 时 FPGA 可以完整提交上一帧再接收下一帧。
+    end_payload = bytes([1, 0, 0, 0, 0])
+    end_pkt = bytes([MAGIC0, MAGIC1, 0x10, 0, len(end_payload)]) + end_payload
+    pkts_per_frame = VGA_H * (VGA_W // chunk)
+
+    try:
+        for r in range(repeat):
+            sent = 0
+            print(f"[+] sending VGA image pass {r+1}/{repeat}: {pkts_per_frame} data pkts, gap={gap}s, chunk={chunk}", flush=True)
+            for y in range(VGA_H):
+                base = y * VGA_W
+                for x0 in range(0, VGA_W, chunk):
+                    payload = bytearray([0, (y >> 8) & 0xFF, y & 0xFF, (x0 >> 8) & 0xFF, x0 & 0xFF])
+                    for x in range(x0, x0 + chunk):
+                        payload.extend(rows[base + x])
+                    pkt = bytes([MAGIC0, MAGIC1, 0x10, (len(payload) >> 8) & 0xFF, len(payload) & 0xFF]) + payload
+                    s.sendto(pkt, (FPGA_IP, FPGA_PORT))
+                    sent += 1
+                    if gap > 0:
+                        time.sleep(gap)
+                if (y + 1) % 40 == 0:
+                    print(f"    row {y+1}/{VGA_H}, sent {sent}/{pkts_per_frame} pkts", flush=True)
+            # 重复发送结束标记，抵抗最后几个 UDP 包丢失；像素不重复，硬件计数不会超一帧。
+            for _ in range(32):
+                s.sendto(end_pkt, (FPGA_IP, FPGA_PORT))
+                if gap > 0:
+                    time.sleep(gap)
+            print(f"[+] VGA image pass {r+1}/{repeat} sent ({sent}/{pkts_per_frame} data pkts + 32 end pkts)")
+            if repeat > 1:
+                time.sleep(max(0.2, gap * 64))
+    finally:
+        s.close()
+    print(f"[+] {label} -> FPGA SDRAM VGA framebuf ({VGA_W}x{VGA_H} RGB888 -> RGB444, FPGA 2x VGA)")
+
+
+def _resolve_image_path(path):
+    p = os.path.abspath(path)
+    if os.path.exists(p):
+        return p
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    p2 = os.path.join(script_dir, path)
+    if os.path.exists(p2):
+        return p2
+    return p
+
+
+def _parse_view_size(view):
+    if not view:
+        return VIEW_W, VIEW_H
+    try:
+        w_s, h_s = view.lower().split('x', 1)
+        w, h = int(w_s, 0), int(h_s, 0)
+        if 1 <= w <= VGA_W and 1 <= h <= VGA_H:
+            return w, h
+    except Exception:
+        pass
+    print(f"[!!] view 参数无效: {view}, 使用默认 {VIEW_W}x{VIEW_H}")
+    return VIEW_W, VIEW_H
+
+
+def cmd_sendvga(path, repeat=1, gap=0.005, chunk=40, view=None, dither=IMG_DITHER_MODE, smooth=0):
+    """发送 VGA_W x VGA_H RGB888 图片到 FPGA SDRAM VGA 帧缓存; VGA 居中原尺寸显示。"""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("[!!] 需要 Pillow: pip install pillow"); return
+    view_w, view_h = _parse_view_size(view)
+    dither = (dither or IMG_DITHER_MODE).lower()
+    send_cmd(0x40, bytes([1 if smooth else 0]))
+    img_path = _resolve_image_path(path)
+    try:
+        img = Image.open(img_path).convert("RGB").resize((view_w, view_h), Image.LANCZOS)
+        try:
+            from PIL import ImageEnhance, ImageFilter, ImageOps
+            if VGA_FB_MODE == 'rgb444':
+                # Restore the earlier 400x288 RGB444 preprocessing version.
+                img = ImageOps.autocontrast(img, cutoff=0.5)
+                img = ImageEnhance.Brightness(img).enhance(0.64)
+                img = ImageEnhance.Contrast(img).enhance(1.20)
+                img = ImageEnhance.Color(img).enhance(0.86)
+                img = img.filter(ImageFilter.DETAIL)
+                img = img.filter(ImageFilter.UnsharpMask(radius=0.46, percent=880, threshold=0))
+                # Strengthen horizontal detail by sharpening across neighbouring x samples.
+                img = img.filter(ImageFilter.Kernel((3, 1), (-0.74, 2.48, -0.74), scale=1.0, offset=0))
+                img = ImageEnhance.Sharpness(img).enhance(1.26)
+            else:
+                # 回退 RGB111 模式才需要量化/抖动。
+                img = ImageEnhance.Brightness(img).enhance(0.74)
+                img = ImageEnhance.Contrast(img).enhance(1.35)
+                img = ImageEnhance.Color(img).enhance(1.15)
+                img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=260, threshold=1))
+                pal = Image.new("P", (1, 1))
+                palette = []
+                for r in (0, 255):
+                    for g in (0, 255):
+                        for b in (0, 255):
+                            palette.extend([r, g, b])
+                palette.extend([0] * (768 - len(palette)))
+                pal.putpalette(palette)
+                if dither == 'none':
+                    img = img.quantize(palette=pal, dither=Image.NONE).convert("RGB")
+                elif dither == 'ordered':
+                    bayer = (0, 8, 2, 10,
+                             12, 4, 14, 6,
+                             3, 11, 1, 9,
+                             15, 7, 13, 5)
+                    pix = list(img.getdata())
+                    out = []
+                    for i, (r, g, b) in enumerate(pix):
+                        x = i % view_w
+                        y = i // view_w
+                        d = (bayer[(y & 3) * 4 + (x & 3)] - 7.5) * 8.0
+                        out.append((255 if r + d >= 128 else 0,
+                                    255 if g + d >= 128 else 0,
+                                    255 if b + d >= 128 else 0))
+                    img = Image.new("RGB", (view_w, view_h))
+                    img.putdata(out)
+                else:
+                    img = img.quantize(palette=pal, dither=Image.FLOYDSTEINBERG).convert("RGB")
+        except Exception:
+            pass
+        canvas = Image.new("RGB", (VGA_W, VGA_H), (0, 0, 0))
+        canvas.paste(img, ((VGA_W - view_w) // 2, (VGA_H - view_h) // 2))
+        img = canvas
+    except FileNotFoundError:
+        print(f"[!!] 找不到输入文件: {path}")
+        print(f"[!!] 已尝试: {img_path}")
+        return
+
+    rows = list(img.getdata())
+    _send_vga_pixels(rows, img_path, repeat, gap, chunk)
+
+
+def cmd_photo2(repeat=1, gap=0.005, chunk=40, view=None, dither=IMG_DITHER_MODE):
+    """快捷发送脚本目录下的 photo2.jpg 到 FPGA VGA。"""
+    photo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "photo2.jpg")
+    cmd_sendvga(photo_path, repeat, gap, chunk, view, dither, smooth=0)
+
+
+def cmd_sendvga_bars(repeat=1, gap=0.005, chunk=40):
+    colors = [
+        (255, 0, 0),      # red
+        (0, 255, 0),      # green
+        (0, 0, 255),      # blue
+        (255, 255, 255),  # white
+        (0, 0, 0),        # black
+        (255, 255, 0),    # yellow
+        (0, 255, 255),    # cyan
+        (255, 0, 255),    # magenta
+    ]
+    send_cmd(0x40, bytes([0]))  # 彩条/测试图关闭平滑，保持边缘锐利。
+    rows = []
+    for y in range(VGA_H):
+        for x in range(VGA_W):
+            rows.append(colors[(x * len(colors)) // VGA_W])
+    _send_vga_pixels(rows, "color bars", repeat, gap, chunk)
 
 # ============================================================
 # Ext-6 : TF 卡 BMP 照片 -> 全分辨率 640x480 RGB565 流式回传
@@ -406,6 +590,29 @@ if __name__ == '__main__':
             print("Usage: python pc_test.py pattern checker|gradient|stripes")
             sys.exit(1)
         cmd_pattern(sys.argv[2])
+    elif op == 'sendvga':
+        if len(sys.argv) < 3:
+            print("Usage: python pc_test.py sendvga <image_path> [repeat] [gap_seconds] [chunk_pixels] [view WxH] [dither fs|ordered|none] [smooth 0|1]")
+            sys.exit(1)
+        rep = int(sys.argv[3], 0) if len(sys.argv) >= 4 else 1
+        gap = float(sys.argv[4]) if len(sys.argv) >= 5 else 0.005
+        chunk = int(sys.argv[5], 0) if len(sys.argv) >= 6 else 40
+        view = sys.argv[6] if len(sys.argv) >= 7 else None
+        dither = sys.argv[7] if len(sys.argv) >= 8 else IMG_DITHER_MODE
+        smooth = int(sys.argv[8], 0) if len(sys.argv) >= 9 else 0
+        cmd_sendvga(sys.argv[2], rep, gap, chunk, view, dither, smooth)
+    elif op == 'photo2':
+        rep = int(sys.argv[2], 0) if len(sys.argv) >= 3 else 1
+        gap = float(sys.argv[3]) if len(sys.argv) >= 4 else 0.005
+        chunk = int(sys.argv[4], 0) if len(sys.argv) >= 5 else 40
+        view = sys.argv[5] if len(sys.argv) >= 6 else None
+        dither = sys.argv[6] if len(sys.argv) >= 7 else IMG_DITHER_MODE
+        cmd_photo2(rep, gap, chunk, view, dither)
+    elif op == 'sendvga_bars':
+        rep = int(sys.argv[2], 0) if len(sys.argv) >= 3 else 1
+        gap = float(sys.argv[3]) if len(sys.argv) >= 4 else 0.005
+        chunk = int(sys.argv[4], 0) if len(sys.argv) >= 5 else 40
+        cmd_sendvga_bars(rep, gap, chunk)
     elif op == 'photo':
         if len(sys.argv) < 3:
             print("Usage: python pc_test.py photo <起始扇区> [out.png]")

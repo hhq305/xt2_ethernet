@@ -33,9 +33,14 @@ module img_tx_rom #(
     reg [2:0]  st;
     reg [15:0] cnt;        // 已发送字节数
 
-    // 256 entry x 6 bit 图像镜像 (与 BRAM 同步, 初始 = demo logo)
+    // 256 entry x 6 bit 图像镜像。默认生成 16x16 彩色测试图，避免依赖外部 hex 文件。
     reg [5:0] mem [0:255];
-    initial $readmemh("logo_256.hex", mem);
+    integer i;
+    initial begin
+        for (i = 0; i < 256; i = i + 1) begin
+            mem[i] = {i[3:2], i[7:6], i[1:0]};
+        end
+    end
     always @(posedge clk) if (wr_en) mem[wr_addr] <= wr_data;
 
     // payload 字节 i 对应像素 i, 6 bit RGB 放低位, 高 2 位零

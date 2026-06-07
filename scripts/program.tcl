@@ -1,6 +1,6 @@
 ## ============================================================
 ##  program.tcl
-##  使用 TD 的 td_load / td_prog 把 top_xt2.bit 下载到 HX4S20C
+##  使用 TD 的 td_load / td_prog 把 udp_transmit_test.bit 下载到 HX4S20C
 ##
 ##  使用方法 :
 ##    td.exe -bat scripts/program.tcl                 (默认下载到 SRAM)
@@ -13,7 +13,7 @@
 
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set PROJ_ROOT  [file normalize "$SCRIPT_DIR/.."]
-set BITFILE    "$PROJ_ROOT/work/top_xt2.bit"
+set BITFILE    "$PROJ_ROOT/work/udp_transmit_test.bit"
 
 if { ![file exists $BITFILE] } {
     puts "ERROR: bitstream not found: $BITFILE"
