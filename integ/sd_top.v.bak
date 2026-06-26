@@ -1,0 +1,120 @@
+// =============================================================
+// sd_top.v  — TF/SD 卡集成 (注意点 ③)
+// 包装 lab_ex_4/src/sd_ctrl_top.v + sd_read_photo.v :
+//   sd_ctrl_top : SPI 模式初始化 + 单扇区读 (CMD17, 一拍 16bit 像素)
+//   sd_read_photo: 顺序读取连续扇区, 输出 16bit RGB565 像素流
+// 本模块把像素流 → 8bit 灰度并写入帧缓存。
+// =============================================================
+`timescale 1ns/1ps
+module sd_top #(
+    parameter IMG_W       = 320,
+    parameter IMG_H       = 240,
+    parameter SD_SEC_NUM  = 16'd1801,    // 一张图所占扇区数 (与 lab_ex_4 一致)
+    parameter MAX_ADDR    = 24'd307200   // 一张图像素总数 (lab_ex_4 默认值)
+)(
+    input  wire        clk_50,
+    input  wire        rst_n,
+    input  wire        start,            // 触发一次读卡 (上电完成自动拉高)
+    // SD 物理引脚
+    input  wire        sd_miso,
+    output wire        sd_clk,
+    output wire        sd_cs,
+    output wire        sd_mosi,
+    // 帧缓存写口
+    output reg         fb_we,
+    output reg  [$clog2(IMG_W*IMG_H)-1:0] fb_waddr,
+    output reg  [7:0]  fb_wdata,
+    output wire        sd_init_done,
+    output reg         frame_done
+);
+    // ---------- SD 控制器 ----------
+    wire        sd_rd_start_en;
+    wire [31:0] sd_rd_sec_addr;
+    wire        sd_rd_busy;
+    wire        sd_rd_val_en;
+    wire [15:0] sd_rd_val_data;
+    // 与 lab_ex_4 sd_eth_top.v 中相同
+    sd_ctrl_top u_sd_ctrl (
+        .clk_ref         (clk_50),
+        .clk_ref_180deg  (~clk_50),       // 仿真用反相; 上板用 PLL 180° 输出
+        .rst_n           (rst_n),
+        .sd_miso         (sd_miso),
+        .sd_clk          (sd_clk),
+        .sd_cs           (sd_cs),
+        .sd_mosi         (sd_mosi),
+        .rd_start_en     (sd_rd_start_en),
+        .rd_sec_addr     (sd_rd_sec_addr),
+        .rd_busy         (sd_rd_busy),
+        .rd_val_en       (sd_rd_val_en),
+        .rd_val_data     (sd_rd_val_data),
+        .sd_init_done    (sd_init_done)
+    );
+
+    // ---------- 顺序读图 (复用 lab demo 的状态机) ----------
+    wire        sdr_wr_en;     // 这两个信号原先送 SDRAM, 此处直接用作 fb 写
+    wire [31:0] sdr_wr_data;
+    sd_read_photo u_sd_rdphoto (
+        .clk           (clk_50),
+        .rst_n         (rst_n & sd_init_done & start),
+        .ddr_max_addr  (MAX_ADDR),
+        .sd_sec_num    (SD_SEC_NUM),
+        .sd_rd_start_en(sd_rd_start_en),
+        .sd_rd_sec_addr(sd_rd_sec_addr),
+        .sd_rd_busy    (sd_rd_busy),
+        .sd_rd_val_en  (sd_rd_val_en),
+        .sd_rd_val_data(sd_rd_val_data),
+        .sdr_wr_en     (sdr_wr_en),
+        .sdr_wr_data   (sdr_wr_data)
+    );
+
+    // ---------- 像素流 → 灰度 → 写帧缓存 ----------
+    // sd_read_photo 输出 32bit (高16=像素0, 低16=像素1) 或单 16bit, 各版本不同;
+    // 此处按 16bit 解析: 每 sdr_wr_en 出 2 个 RGB565 像素
+    wire [15:0] pix0 = sdr_wr_data[31:16];
+    wire [15:0] pix1 = sdr_wr_data[15:0];
+    function [7:0] rgb565_to_y(input [15:0] p);
+        reg [7:0] r,g,b; reg [9:0] s;
+        begin
+            r = {p[15:11],3'b0};
+            g = {p[10:5],2'b0};
+            b = {p[4:0], 3'b0};
+            s = r + (g<<1) + b;
+            rgb565_to_y = s[9:2];
+        end
+    endfunction
+
+    reg [$clog2(IMG_W*IMG_H)-1:0] addr_r;
+    reg [1:0] phase;            // 0/1: 写两个像素; 2: idle
+    reg [15:0] pix1_buf;
+    always @(posedge clk_50 or negedge rst_n) begin
+        if (!rst_n) begin
+            fb_we<=0; fb_waddr<=0; fb_wdata<=0;
+            addr_r<=0; phase<=2'd2; frame_done<=0; pix1_buf<=0;
+        end else begin
+            fb_we      <= 1'b0;
+            frame_done <= 1'b0;
+            case (phase)
+                2'd2: if (sdr_wr_en) begin
+                          fb_we    <= 1'b1;
+                          fb_waddr <= addr_r;
+                          fb_wdata <= rgb565_to_y(pix0);
+                          pix1_buf <= pix1;
+                          phase    <= 2'd1;
+                      end
+                2'd1: begin
+                          fb_we    <= 1'b1;
+                          fb_waddr <= addr_r + 1'b1;
+                          fb_wdata <= rgb565_to_y(pix1_buf);
+                          if (addr_r + 2 >= IMG_W*IMG_H) begin
+                              addr_r     <= 0;
+                              frame_done <= 1'b1;
+                          end else begin
+                              addr_r <= addr_r + 2'd2;
+                          end
+                          phase <= 2'd2;
+                      end
+                default: phase <= 2'd2;
+            endcase
+        end
+    end
+endmodule

@@ -1,0 +1,239 @@
+// =============================================================
+// top_xt2.v  — HX4S20C (EG4S20BG256) 顶层 (终版, 已解决注意点 ①②③④)
+//
+// 注意点 ① HDMI : 使用 lab_ex_5 的 hdmi_tx (FAMILY="EG4", 含 OSER10/LVDS)
+//                  通过 src/integ/hdmi_top_wrap.v 包装。
+// 注意点 ② SCCB : 使用 lab_ex_5 的 ov5640_dri (含 i2c_dri + RGB565 配置)
+//                  通过 src/integ/cam_top.v 包装。
+// 注意点 ③ TF   : 使用 lab_ex_4 的 sd_ctrl_top + sd_read_photo
+//                  通过 src/integ/sd_top.v 包装。
+// 注意点 ④ SDRAM: 使用 lab_ex_5 的 sdram (含 sdr_as_ram 控制器)
+//                  通过 src/integ/sdram_fb.v 包装, 接口与 framebuf 同。
+// =============================================================
+`timescale 1ns/1ps
+`include "pkt_fmt.vh"
+
+module top_xt2 #(
+    parameter USE_SDRAM = 1               // 0=BRAM(320x240), 1=SDRAM(>=1024x768)
+)(
+    input  wire        clk_50,            // R7
+    input  wire        rst_n,             // A2
+    input  wire        key1,              // B2
+    input  wire        key2,              // B1
+
+    output wire [2:0]  led,
+
+    // 以太网 PHY1 RGMII
+    input  wire        phy1_rgmii_rx_clk,
+    input  wire        phy1_rgmii_rx_ctl,
+    input  wire [3:0]  phy1_rgmii_rx_data,
+    output wire        phy1_rgmii_tx_clk,
+    output wire        phy1_rgmii_tx_ctl,
+    output wire [3:0]  phy1_rgmii_tx_data,
+
+    // VGA 12bit
+    output wire [11:0] VGA_D,
+    output wire        VGA_HSYNC,
+    output wire        VGA_VSYNC,
+
+    // HDMI 差分
+    output wire        HDMI_CLK_P,
+    output wire        HDMI_D0_P,
+    output wire        HDMI_D1_P,
+    output wire        HDMI_D2_P,
+
+    // 摄像头 OV5640
+    input  wire        cam_pclk,
+    input  wire        cam_href,
+    input  wire        cam_vsync,
+    input  wire [7:0]  cam_data,
+    output wire        cam_pwdn,
+    output wire        cam_rst_n,
+    output wire        cam_scl,
+    inout  wire        cam_sda,
+
+    // TF (SPI)
+    output wire        sd_clk,
+    output wire        sd_mosi,
+    input  wire        sd_miso,
+    output wire        sd_cs
+);
+    // ---- 模式 (key 默认拉高, 按下为 0, 取反方便编程) ----
+    wire [1:0] mode = ~{key2, key1};
+
+    // ---- PLL ----
+    wire clk_125m, clk_25m, pclk_40m, sclk_200m, pll_locked;
+    pll_gen u_pll (
+        .refclk(clk_50), .reset(~rst_n),
+        .clk0(clk_125m), .clk1(clk_25m),
+        .clk2(pclk_40m), .clk3(sclk_200m),
+        .lock(pll_locked)
+    );
+
+    // 第二组 PLL : SDRAM 主时钟 + 移相 (使用 demo 提供的 pll_50)
+    wire sdr_clk, sdr_clk_sft, pll2_lock;
+    pll_50 u_pll2 (
+        .refclk (clk_50),
+        .reset  (1'b0),
+        .extlock(pll2_lock),
+        .clk0_out(sdr_clk),         // 100MHz
+        .clk1_out(sdr_clk_sft),     // 100MHz 180°
+        .clk2_out()
+    );
+
+    wire sys_rst_n = rst_n & pll_locked & pll2_lock;
+
+    // ---- temac (UDP/IP/MAC) ----
+    wire [7:0]  app_rx_data;
+    wire        app_rx_valid;
+    wire [15:0] app_rx_length;
+    wire [7:0]  app_tx_data;
+    wire        app_tx_data_valid, app_tx_request, udp_tx_ready, app_tx_ack;
+    wire [15:0] udp_data_length;
+    wire        phy1_resetn;
+    temac_block u_temac (
+        .clk_125m(clk_125m), .clk_25m(clk_25m), .reset(~sys_rst_n),
+        .rgmii_rxc(phy1_rgmii_rx_clk), .rgmii_rx_ctl(phy1_rgmii_rx_ctl), .rgmii_rxd(phy1_rgmii_rx_data),
+        .rgmii_txc(phy1_rgmii_tx_clk), .rgmii_tx_ctl(phy1_rgmii_tx_ctl), .rgmii_txd(phy1_rgmii_tx_data),
+        .phy_resetn(phy1_resetn),
+        .app_rx_clk(clk_125m), .app_rx_data(app_rx_data),
+        .app_rx_data_valid(app_rx_valid), .app_rx_data_length(app_rx_length),
+        .app_tx_clk(clk_125m), .udp_tx_ready(udp_tx_ready), .app_tx_ack(app_tx_ack),
+        .app_tx_data(app_tx_data), .app_tx_data_request(app_tx_request),
+        .app_tx_data_valid(app_tx_data_valid), .udp_data_length(udp_data_length)
+    );
+
+    // ---- 命令解码 ----
+    wire [7:0]  led_eth8;
+    wire [31:0] seg_eth;
+    wire [1:0]  proc_mode_eth;
+    cmd_decode u_cmd (
+        .clk(clk_125m), .rst_n(sys_rst_n),
+        .rx_data(app_rx_data), .rx_valid(app_rx_valid), .rx_length(app_rx_length),
+        .led_o(led_eth8), .seg_bcd_o(seg_eth), .proc_mode_o(proc_mode_eth),
+        .ack_pulse_o());
+    assign led = led_eth8[2:0];
+
+    // ---- 帧缓存写口仲裁 (ETH-RX / SD / CAM) ----
+    wire        we_eth, we_sd, we_cam;
+    wire [16:0] wa_eth, wa_sd, wa_cam;
+    wire [7:0]  wd_eth, wd_sd, wd_cam;
+
+    wire eth_mode = (mode == 2'b00) || (mode == 2'b01);
+    wire sd_mode  = (mode == 2'b01);
+    wire cam_mode = (mode == 2'b10);
+
+    wire        fb_we   = cam_mode ? we_cam : sd_mode ? we_sd : we_eth;
+    wire [16:0] fb_wa   = cam_mode ? wa_cam : sd_mode ? wa_sd : wa_eth;
+    wire [7:0]  fb_wd   = cam_mode ? wd_cam : sd_mode ? wd_sd : wd_eth;
+    wire        fb_wclk = cam_mode ? cam_pclk : (sd_mode ? clk_50 : clk_125m);
+
+    wire        fb_re;
+    wire [16:0] fb_raddr;
+    wire [7:0]  fb_rdata_8;
+
+    generate if (USE_SDRAM == 0) begin : g_bram
+        framebuf #(.W(320),.H(240),.DW(8)) u_fb (
+            .wclk(fb_wclk), .wen(fb_we), .waddr(fb_wa), .wdata(fb_wd),
+            .rclk(pclk_40m), .ren(fb_re), .raddr(fb_raddr), .rdata(fb_rdata_8));
+    end else begin : g_sdram
+        wire [15:0] rdata16;
+        sdram_fb #(.W(1024),.H(768),.DW(16),.AW(24)) u_fb (
+            .wclk(fb_wclk), .wen(fb_we), .waddr({7'b0,fb_wa}), .wdata({8'h00,fb_wd}),
+            .rclk(pclk_40m), .ren(fb_re), .raddr({7'b0,fb_raddr}), .rdata(rdata16),
+            .sdr_clk(sdr_clk), .sdr_clk_sft(sdr_clk_sft),
+            .sdr_rst(~sys_rst_n), .sdr_init_done());
+        assign fb_rdata_8 = rdata16[7:0];
+    end endgenerate
+
+    // ---- 注意点 ② 摄像头 ----
+    wire cam_init_done;
+    cam_top #(.IMG_W(320),.IMG_H(240)) u_cam (
+        .clk_50(clk_50), .rst_n(sys_rst_n),
+        .cam_pclk(cam_pclk), .cam_vsync(cam_vsync), .cam_href(cam_href),
+        .cam_data(cam_data), .cam_rst_n(cam_rst_n), .cam_pwdn(cam_pwdn),
+        .cam_scl(cam_scl), .cam_sda(cam_sda), .cam_init_done(cam_init_done),
+        .fb_we(we_cam), .fb_waddr(wa_cam), .fb_wdata(wd_cam), .frame_done());
+
+    // ---- 注意点 ③ TF ----
+    wire sd_init_done;
+    sd_top #(.IMG_W(320),.IMG_H(240)) u_sd (
+        .clk_50(clk_50), .rst_n(sys_rst_n), .start(sd_mode),
+        .sd_miso(sd_miso), .sd_clk(sd_clk), .sd_cs(sd_cs), .sd_mosi(sd_mosi),
+        .fb_we(we_sd), .fb_waddr(wa_sd), .fb_wdata(wd_sd),
+        .sd_init_done(sd_init_done), .frame_done());
+
+    // ---- 以太网图像接收 ----
+    img_rx_fb #(.IMG_W(320),.IMG_H(240)) u_img_rx (
+        .clk(clk_125m), .rst_n(sys_rst_n),
+        .rx_data(app_rx_data), .rx_valid(app_rx_valid),
+        .fb_we(we_eth), .fb_waddr(wa_eth), .fb_wdata(wd_eth),
+        .frame_done());
+
+    // ---- 处理与检测 ----
+    wire        proc_v;  wire [7:0] proc_pix;  wire is_obj;
+    wire [9:0]  pxo;     wire [8:0] pyo;
+    img_proc #(.IMG_W(320),.IMG_H(240)) u_proc (
+        .clk(pclk_40m), .rst_n(sys_rst_n), .mode(proc_mode_eth),
+        .din_valid(fb_re), .din(fb_rdata_8),
+        .dout_valid(proc_v), .x_o(pxo), .y_o(pyo),
+        .dout(proc_pix), .is_obj(is_obj));
+    wire vga_frame_end = proc_v && (pxo==10'd319) && (pyo==9'd239);
+    obj_detect u_obj (
+        .clk(pclk_40m), .rst_n(sys_rst_n),
+        .in_valid(proc_v), .is_obj(is_obj),
+        .x_in(pxo), .y_in(pyo), .frame_end(vga_frame_end),
+        .bbox_xmin(),.bbox_xmax(),.bbox_ymin(),.bbox_ymax(),
+        .cx(),.cy(),.obj_area(),.result_valid());
+
+    // ---- VGA ----
+    wire vga_de, vga_hs_w, vga_vs_w;
+    wire [4:0] vr; wire [5:0] vg; wire [4:0] vb;
+    vga_ctrl #(.IMG_W(320),.IMG_H(240)) u_vga (
+        .pclk(pclk_40m), .rst_n(sys_rst_n),
+        .fb_re(fb_re), .fb_raddr(fb_raddr), .fb_rdata(fb_rdata_8),
+        .hs(vga_hs_w), .vs(vga_vs_w), .de(vga_de),
+        .r(vr), .g(vg), .b(vb));
+    assign VGA_HSYNC = vga_hs_w;
+    assign VGA_VSYNC = vga_vs_w;
+    assign VGA_D     = vga_de ? {vr[4:1], vg[5:2], vb[4:1]} : 12'h000;
+
+    // ---- 注意点 ① HDMI ----
+    hdmi_top_wrap u_hdmi (
+        .pclk(pclk_40m), .sclk5x(sclk_200m), .rst_n(sys_rst_n),
+        .de(vga_de), .hs(vga_hs_w), .vs(vga_vs_w),
+        .r({vr,3'b0}), .g({vg,2'b0}), .b({vb,3'b0}),
+        .HDMI_CLK_P(HDMI_CLK_P),
+        .HDMI_D0_P(HDMI_D0_P), .HDMI_D1_P(HDMI_D1_P), .HDMI_D2_P(HDMI_D2_P)
+    );
+
+    // ---- 上行 / 主机模式 ----
+    reg img_req_pulse;
+    always @(posedge clk_125m or negedge sys_rst_n) begin
+        if (!sys_rst_n) img_req_pulse <= 1'b0;
+        else            img_req_pulse <= app_rx_valid && (app_rx_data==`CMD_IMG_REQ);
+    end
+    wire [7:0]  tx_d_img;  wire tx_v_img,  tx_req_img;  wire [15:0] tx_len_img;
+    img_tx_rom #(.IMG_W(320),.IMG_H(240)) u_img_tx (
+        .clk(clk_125m), .rst_n(sys_rst_n),
+        .start(img_req_pulse | cam_mode),
+        .rom_re(), .rom_addr(), .rom_data(fb_rdata_8),
+        .udp_tx_ready(udp_tx_ready), .app_tx_ack(app_tx_ack),
+        .app_tx_data(tx_d_img), .app_tx_data_valid(tx_v_img),
+        .udp_data_length(tx_len_img), .app_tx_request(tx_req_img));
+
+    wire [7:0]  tx_d_m;  wire tx_v_m, tx_req_m;  wire [15:0] tx_len_m;
+    fpga_master u_master (
+        .clk(clk_125m), .rst_n(sys_rst_n),
+        .mode_sel(2'd0), .led_pat({5'b0, mode, 1'b0}),
+        .seg_val(16'h1234), .proc_mode(proc_mode_eth),
+        .udp_tx_ready(udp_tx_ready), .app_tx_ack(app_tx_ack),
+        .app_tx_data(tx_d_m), .app_tx_data_valid(tx_v_m),
+        .udp_data_length(tx_len_m), .app_tx_request(tx_req_m));
+
+    wire master_mode = (mode == 2'b11);
+    assign app_tx_data       = master_mode ? tx_d_m   : tx_d_img;
+    assign app_tx_data_valid = master_mode ? tx_v_m   : tx_v_img;
+    assign app_tx_request    = master_mode ? tx_req_m : tx_req_img;
+    assign udp_data_length   = master_mode ? tx_len_m : tx_len_img;
+endmodule
