@@ -1,34 +1,32 @@
 ## ============================================================
 ##  build.tcl
-##  HX4S20C (EG4S20BG256) — 选题二 以太网数据传输系统
-##  TD 6.2.1 全自动 综合 → 布局布线 → bitgen
+##  HX4S20C (EG4S20BG256) �?閫夐�浜?浠ュお缃戞暟鎹�紶杈撶郴�?##  TD 6.2.1 鍏ㄨ嚜鍔?缁煎�?�?甯冨眬甯冪嚎 �?bitgen
 ##
-##  顶层模块 : udp_transmit_test  (src/top/udp_transmit_test.v)
-##  约束文件 : sdc/xt2.adc
+##  椤跺眰妯″潡 : udp_transmit_test  (src/top/udp_transmit_test.v)
+##  绾︽潫鏂囦欢 : sdc/xt2.adc
 ##
-##  使用方法 :
-##    1) GUI :  Tools → Tcl Console → source scripts/build.tcl
-##    2) 批处理 :  td.exe  -bat  scripts/build.tcl
-##  生成物 :
-##    work/udp_transmit_test.bit       —— 烧录用 bitstream
-##    work/udp_transmit_test_phy.area  —— 资源/IO 报告
-##    work/udp_transmit_test_pr.timing —— 时序报告
-##  烧录:
-##    td_load.exe work/udp_transmit_test.bit  (USB 在线下载到 SRAM)
-##    td_prog.exe work/udp_transmit_test.bit  (烧 SPI Flash, 上电自动加载)
-##  也可在 TD GUI 的 “Download” 面板选中 work/udp_transmit_test.bit 直接烧录。
-##
-##  注意: 旧的 top_xt2.v / src/integ/*.v 已 .bak 弃用 (走 SDRAM/HDMI/SD 那条线),
-##  本脚本只编译 udp_transmit_test 真正用到的模块, 减少综合时间和 IO 冲突.
+##  浣跨敤鏂规硶 :
+##    1) GUI :  Tools �?Tcl Console �?source scripts/build.tcl
+##    2) 鎵瑰�鐞?:  td.exe  -bat  scripts/build.tcl
+##  鐢熸垚鐗?:
+##    work/udp_transmit_test.bit       鈥斺�?鐑у綍�?bitstream
+##    work/udp_transmit_test_phy.area  鈥斺�?璧勬�?IO 鎶ュ�?
+##    work/udp_transmit_test_pr.timing 鈥斺�?鏃跺簭鎶ュ憡
+##  鐑у綍:
+##    td_load.exe work/udp_transmit_test.bit  (USB 鍦ㄧ嚎涓嬭浇�?SRAM)
+##    td_prog.exe work/udp_transmit_test.bit  (�?SPI Flash, 涓婄數鑷�姩鍔犺�?
+##  涔熷彲鍦?TD GUI �?鈥淒ownload�?闈㈡澘閫変腑 work/udp_transmit_test.bit 鐩存帴鐑у綍銆?##
+##  娉ㄦ�? 鏃х殑 top_xt2.v / src/integ/*.v �?.bak 寮冪�?(�?SDRAM/HDMI/SD 閭ｆ潯绾?,
+##  鏈�剼鏈�彧缂栬�?udp_transmit_test 鐪熸�鐢ㄥ埌鐨勬ā�? 鍑忓皯缁煎悎鏃堕棿鍜?IO 鍐茬�?
 ## ============================================================
 
-# -------- 1. 工程基本信息 --------
+# -------- 1. 宸ョ▼鍩烘湰淇℃�?--------
 set PRJ        udp_transmit_test
 set TOPMODULE  udp_transmit_test
 set DEVICE     EG4S20BG256
 set PACKAGE    BG256
 
-# 推断当前工程根目录 (脚本位于 xt2_ethernet/scripts/)
+# 鎺ㄦ柇褰撳墠宸ョ▼鏍圭洰�?(鑴氭湰浣嶄簬 xt2_ethernet/scripts/)
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set PROJ_ROOT  [file normalize "$SCRIPT_DIR/.."]
 
@@ -39,16 +37,22 @@ cd $RUN_DIR
 puts "## PRJ_ROOT = $PROJ_ROOT"
 puts "## RUN_DIR  = $RUN_DIR"
 
-# -------- 2. 设备 / 工程 --------
+# -------- 2. 璁惧�?/ 宸ョ�?--------
 import_device $DEVICE -package $PACKAGE
 new_project   $PRJ -dir $RUN_DIR -force
 
-# -------- 3. 源文件清单 --------
-# 3.1 顶层 + 自写应用层 (src/app, src/top)
+# -------- 3. 婧愭枃浠舵竻�?--------
+# 3.1 椤跺�?+ 鑷�啓搴旂敤�?(src/app, src/top)
 set DESIGN_FILES {
     src/app/cmd_decode.v
     src/app/seg_scan.v
     src/app/cam_to_bram.v
+    src/app/cam_frame_capture.v
+    src/app/cam_hxv2_tx.v
+    src/app/stream_tx.v
+    src/app/cam_pattern_tx.v
+    src/app/cam_motion_track.v
+    src/app/track_stream_tx.v
     src/app/img_rx_fb.v
     src/app/sdram_img_fb.v
     src/app/img_tx_rom.v
@@ -64,7 +68,7 @@ foreach f $DESIGN_FILES {
     add_file -type verilog "$PROJ_ROOT/$f"
 }
 
-# 3.1b 扩展⑥ TF 卡 SD-SPI + 50MHz PLL
+# 3.1b 鎵╁睍鈶?TF �?SD-SPI + 50MHz PLL
 foreach f {
     src/vendor/al_ip/pll_50.v
     src/vendor/sd/sd_ctrl_top.v
@@ -74,7 +78,7 @@ foreach f {
     add_file -type verilog "$PROJ_ROOT/$f"
 }
 
-# 3.1c vendor SDRAM 控制器 (EG_PHY_SDRAM_2M_32 + encrypted controller)
+# 3.1c vendor SDRAM 鎺у埗�?(EG_PHY_SDRAM_2M_32 + encrypted controller)
 foreach f {
     global_def.v
     sdr_as_ram.enc.v
@@ -85,7 +89,7 @@ foreach f {
     add_file -type verilog "$PROJ_ROOT/src/vendor/sdram/$f"
 }
 
-# 3.1d vendor SDRAM framebuffer FIFO/burst 控制器 (from HX4S20 reference)
+# 3.1d vendor SDRAM framebuffer FIFO/burst 鎺у埗�?(from HX4S20 reference)
 foreach f {
     afifo_16_32_256.v
     afifo_32_16_256.v
@@ -96,7 +100,7 @@ foreach f {
     add_file -type verilog "$PROJ_ROOT/src/vendor/sdram_fb/$f"
 }
 
-# 3.2 vendor app 层 (VGA 显示 + UDP 解包写 SDRAM framebuffer)
+# 3.2 vendor app �?(VGA 鏄剧�?+ UDP 瑙ｅ寘鍐?SDRAM framebuffer)
 foreach f {
     src/vendor/app/addr_crt.v
     src/vendor/app/vga_disp.v
@@ -105,8 +109,8 @@ foreach f {
     add_file -type verilog "$PROJ_ROOT/$f"
 }
 
-# 3.3 vendor 以太网协议栈 (本地化, 来自温故 33_HX4S20_Ethernet_test)
-#     注意: udp_ip_protocol_stack_merge.enc.v 是加密 IP, TD 直接吃
+# 3.3 vendor 浠ュお缃戝崗璁��?(鏈�湴鍖? 鏉ヨ嚜娓╂晠 33_HX4S20_Ethernet_test)
+#     注意: udp_ip_protocol_stack_merge.enc.v 是加�?IP, TD 可直接综合�?
 set ETH_FILES {
     BUFGMUX.v
     IDDR.v
@@ -134,7 +138,7 @@ foreach f $ETH_FILES {
     add_file -type verilog "$PROJ_ROOT/src/vendor/eth/$f"
 }
 
-# 3.4 vendor OV5640 摄像头 (扩展⑤)
+# 3.4 vendor OV5640 鎽勫儚澶?(鎵╁睍鈶?
 foreach f {
     i2c_dri.v
     i2c_ov5640_rgb565_cfg.v
@@ -145,18 +149,18 @@ foreach f {
     add_file -type verilog "$PROJ_ROOT/src/vendor/ov5640/$f"
 }
 
-# -------- 4. 引脚 / 时序约束 --------
+# -------- 4. 寮曡�?/ 鏃跺簭绾︽潫 --------
 read_adc "$PROJ_ROOT/sdc/xt2.adc"
-# 若以后写时序约束, 用 read_sdc, 例如:
+# 鑻ヤ互鍚庡啓鏃跺簭绾︽潫, �?read_sdc, 渚嬪�?
 #   read_sdc "$PROJ_ROOT/sdc/xt2.sdc"
 
-# -------- 5. 顶层模块 / 工程参数 --------
+# -------- 5. 椤跺眰妯″潡 / 宸ョ▼鍙傛暟 --------
 set_top_model  $TOPMODULE
 set_option     -top $TOPMODULE
-# 让 `include "pkt_fmt.vh" / "global_def.v" 找到对应头文件
+# �?`include "pkt_fmt.vh" / "global_def.v" 找到对应头文件�?
 set_option     -include_path "$PROJ_ROOT/src/app;$PROJ_ROOT/src/vendor/sdram"
 
-# -------- 6. 自动化流程 (read_design → bitgen) --------
+# -------- 6. 鑷�姩鍖栨祦�?(read_design �?bitgen) --------
 puts "##############  STEP 1/6 elaborate  ##############"
 elaborate          -top $TOPMODULE
 export_db          ${PRJ}_elaborate.db
@@ -194,6 +198,6 @@ puts ""
 puts "================================================================"
 puts "  BUILD DONE."
 puts "  Bitstream : $RUN_DIR/${PRJ}.bit"
-puts "  烧录命令  : td_load.exe $RUN_DIR/${PRJ}.bit"
-puts "  或在 TD GUI 的 Download 面板里选中此 .bit 烧到 SRAM/Flash"
+puts "  鐑у綍鍛戒�? : td_load.exe $RUN_DIR/${PRJ}.bit"
+puts "  鎴栧�?TD GUI �?Download 闈㈡澘閲岄€変腑�?.bit 鐑у埌 SRAM/Flash"
 puts "================================================================"

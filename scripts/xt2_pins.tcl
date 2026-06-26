@@ -1,7 +1,7 @@
-## xt2_pins.tcl — HX4S20C 真实引脚 (Tcl 等价 .adc, 可直接 source)
-## 用法: TD Tcl Console → source scripts/xt2_pins.tcl
+## xt2_pins.tcl 鈥?HX4S20C 鐪熷疄寮曡剼 (Tcl 绛変环 .adc, 鍙洿鎺?source)
+## 鐢ㄦ硶: TD Tcl Console 鈫?source scripts/xt2_pins.tcl
 
-# 时钟/复位/按键
+# 鏃堕挓/澶嶄綅/鎸夐敭
 set_pin_assignment { clk_50 } { LOCATION = R7; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { rst_n  } { LOCATION = A2; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { key1   } { LOCATION = B2; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
@@ -12,7 +12,7 @@ set_pin_assignment { led[0] } { LOCATION = F16; IOSTANDARD = LVCMOS33; DRIVESTRE
 set_pin_assignment { led[1] } { LOCATION = E16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment { led[2] } { LOCATION = E12; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
-# 以太网 PHY1 RGMII
+# 浠ュお缃?PHY1 RGMII
 set_pin_assignment { phy1_rgmii_rx_clk    } { LOCATION = T14; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { phy1_rgmii_rx_ctl    } { LOCATION = T13; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { phy1_rgmii_rx_data[0]} { LOCATION = P6;  IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
@@ -48,7 +48,8 @@ set_pin_assignment { HDMI_D0_P  } { LOCATION = F5; IOSTANDARD = LVDS33; PULLTYPE
 set_pin_assignment { HDMI_D1_P  } { LOCATION = E3; IOSTANDARD = LVDS33; PULLTYPE = NONE; }
 set_pin_assignment { HDMI_D2_P  } { LOCATION = B3; IOSTANDARD = LVDS33; PULLTYPE = NONE; }
 
-# OV5640 摄像头
+# OV5640 camera (Ext-5)
+set_pin_assignment { cam_xclk  } { LOCATION = J16; IOSTANDARD = LVCMOS33; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 set_pin_assignment { cam_pclk  } { LOCATION = H15; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { cam_href  } { LOCATION = R15; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { cam_vsync } { LOCATION = R14; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
@@ -71,4 +72,4 @@ set_pin_assignment { sd_miso } { LOCATION = B14; IOSTANDARD = LVCMOS33; PULLTYPE
 set_pin_assignment { sd_mosi } { LOCATION = A13; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 set_pin_assignment { sd_cs   } { LOCATION = A12; IOSTANDARD = LVCMOS33; PULLTYPE = NONE; }
 
-puts "## xt2_pins.tcl : 全部引脚已应用 (HX4S20C / EG4S20BG256)"
+puts "## xt2_pins.tcl : 鍏ㄩ儴寮曡剼宸插簲鐢?(HX4S20C / EG4S20BG256)"
