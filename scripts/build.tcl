@@ -52,6 +52,7 @@ set DESIGN_FILES {
     src/app/stream_tx.v
     src/app/cam_pattern_tx.v
     src/app/cam_motion_track.v
+    src/app/cam_roi_tx.v
     src/app/track_stream_tx.v
     src/app/img_rx_fb.v
     src/app/sdram_img_fb.v

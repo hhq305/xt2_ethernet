@@ -15,6 +15,7 @@
 `define CMD_IMG_DATA    8'h21
 `define CMD_CAM_START   8'h30
 `define CMD_CAM_FRAME   8'h31
+`define CMD_CAM_ROI     8'h32
 `define CMD_PROC_MODE   8'h40
 
 // 图像参数 (默认 320x240 RGB332，可选 RGB565/灰度)

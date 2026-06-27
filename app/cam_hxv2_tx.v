@@ -50,14 +50,13 @@ module cam_hxv2_tx #(
     reg        fifo_ren;
     reg        fifo_rflush;
     reg        vs_d;
-    reg        href_d;
     reg        frame_tag_cam;
     reg [9:0]  cam_x_cnt;
     reg [17:0] pixel_word;
     reg [10:0] align_drop_cnt;
 
-    wire       rempty;
-    wire       fifo_wfull;
+    wire        rempty;
+    wire        fifo_wfull;
     wire [11:0] fifo_wused;
     wire [17:0] fifo_rdata;
     wire        pixel_frame_tag  = pixel_word[17];
@@ -66,7 +65,7 @@ module cam_hxv2_tx #(
     wire        line_start_cam   = cmos_frame_valid & (cam_x_cnt == 10'd0);
     wire        frame_start_cam  = cmos_frame_vsync & ~vs_d;
     wire        fifo_wen         = enable & cmos_frame_valid & cmos_frame_href &
-                                    (cam_x_cnt < FRAME_WIDTH[9:0]) & ~fifo_wfull;
+                                   (cam_x_cnt < FRAME_WIDTH[9:0]) & ~fifo_wfull;
 
     assign busy = (st != S_WAIT);
 
@@ -93,12 +92,10 @@ module cam_hxv2_tx #(
     always @(posedge cam_pclk or negedge rst_n) begin
         if (!rst_n) begin
             vs_d          <= 1'b0;
-            href_d        <= 1'b0;
             frame_tag_cam <= 1'b0;
             cam_x_cnt     <= 10'd0;
         end else begin
-            vs_d   <= cmos_frame_vsync;
-            href_d <= cmos_frame_href;
+            vs_d <= cmos_frame_vsync;
             if (!enable) begin
                 frame_tag_cam <= 1'b0;
                 cam_x_cnt     <= 10'd0;
@@ -108,9 +105,8 @@ module cam_hxv2_tx #(
                     cam_x_cnt     <= 10'd0;
                 end else if (!cmos_frame_href) begin
                     cam_x_cnt <= 10'd0;
-                end else if (cmos_frame_valid) begin
-                    if (cam_x_cnt < FRAME_WIDTH[9:0])
-                        cam_x_cnt <= cam_x_cnt + 10'd1;
+                end else if (cmos_frame_valid && (cam_x_cnt < FRAME_WIDTH[9:0])) begin
+                    cam_x_cnt <= cam_x_cnt + 10'd1;
                 end
             end
         end
@@ -228,13 +224,13 @@ module cam_hxv2_tx #(
                             16'd9:  app_tx_data <= FRAME_WIDTH[7:0];
                             16'd10: app_tx_data <= FRAME_HEIGHT[15:8];
                             16'd11: app_tx_data <= FRAME_HEIGHT[7:0];
-                            16'd12: app_tx_data <= 8'd1;
+                            16'd12: app_tx_data <= 8'd0;
                             16'd13: app_tx_data <= 8'd0;
                             16'd14: app_tx_data <= 8'd0;
                             16'd15: app_tx_data <= 8'd0;
-                            16'd16: app_tx_data <= FRAME_WIDTH[15:8];
-                            16'd17: app_tx_data <= FRAME_WIDTH[7:0];
-                            16'd18: app_tx_data <= 8'd5;
+                            16'd16: app_tx_data <= 8'd0;
+                            16'd17: app_tx_data <= 8'd0;
+                            16'd18: app_tx_data <= 8'd0;
                             16'd19: app_tx_data <= 8'd0;
                             default: app_tx_data <= cnt[0] ? rgb565_data[7:0] : rgb565_data[15:8];
                         endcase

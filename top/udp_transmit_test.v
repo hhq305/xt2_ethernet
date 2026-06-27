@@ -101,7 +101,7 @@
 // Reference working project uses live camera FIFO without frame-diff tracking.
 // Keep motion tracking off by default for the PC camera-return bring-up path;
 // enable this only after TD resource/timing is safely below device limits.
-// `define CAM_MOTION_TRACK_ENABLE
+`define CAM_MOTION_TRACK_ENABLE
 module udp_transmit_test(
         input               key1,
         input               key2,
@@ -1043,11 +1043,11 @@ always @(posedge udp_clk or negedge key1) begin
     end
 end
 // CAM_INPUT_PROBE LED mux (KEY1 clears sticky LEDs):
-//   LED1=cam_hxv2_tx saw >=640 FIFO words
-//   LED2=cam_hxv2_tx entered S_REQ
-//   LED3=cam_hxv2_tx saw app_tx_ack
-//   LED4=cam_hxv2_tx entered S_SEND / output first byte
-assign led = cam_hxv2_dbg_state_seen;
+//   LED1=cam_udp_tx_ready appeared
+//   LED2=cam_hxv2_tx asserted app_tx_request
+//   LED3=UDP core acknowledged HXV2 send request
+//   LED4=cam_hxv2_tx output at least one payload byte
+assign led = {camprobe_tx_byte_seen, camprobe_tx_ack_seen, camprobe_tx_req_seen, camprobe_hxv2_ready_seen};
 `else
 `ifdef SD_PHOTO_PROBE
 // =============================================================
@@ -1685,30 +1685,45 @@ wire        cam_app_tx_request;
 wire        cam_app_tx_data_valid;
 wire [7:0]  cam_app_tx_data;
 wire [15:0] cam_udp_data_length;
+wire        roi_tx_busy;
+wire        roi_app_tx_request;
+wire        roi_app_tx_data_valid;
+wire [7:0]  roi_app_tx_data;
+wire [15:0] roi_udp_data_length;
 
 // FPGA->PC TX 浠茶�锛歱hoto/cam 鍙��?active �?busy 鏃跺崰鐢�紱�?img 鍦ㄧ┖闂叉椂鐩撮€氥�?
 // img_req_pulse 浼氬湪涓婇潰鐨勬帶鍒堕€昏緫涓�己鍒堕噴鏀?cam_active_udp锛岄伩鍏?camcap 寮傚父鍗℃�鏃ц矾寰勩�?
 wire        tx_grant_photo = photo_active_udp | photo_tx_busy;
+wire        tx_roi_pending = roi_tx_busy | roi_app_tx_request | roi_app_tx_data_valid;
 `ifdef CAM_REFERENCE_DIRECT_TX
-wire        tx_grant_cam   = !tx_grant_photo & cam_en & cam_init_udp;
+wire        tx_cam_active  = cam_tx_busy | cam_app_tx_request | cam_app_tx_data_valid;
+wire        tx_grant_cam   = !tx_grant_photo & (tx_cam_active | (cam_en & cam_init_udp & !tx_roi_pending));
 `else
-wire        tx_grant_cam   = !tx_grant_photo & (cam_active_udp | cam_tx_busy | cam_app_tx_request | cam_app_tx_data_valid);
+wire        tx_cam_active  = cam_active_udp | cam_tx_busy | cam_app_tx_request | cam_app_tx_data_valid;
+wire        tx_grant_cam   = !tx_grant_photo & tx_cam_active;
 `endif
-wire        rom_udp_tx_ready   = (!tx_grant_photo && !tx_grant_cam) ? udp_tx_ready : 1'b0;
-wire        rom_app_tx_ack     = (!tx_grant_photo && !tx_grant_cam) ? app_tx_ack   : 1'b0;
+wire        tx_grant_roi   = !tx_grant_photo & !tx_cam_active & tx_roi_pending;
+wire        rom_udp_tx_ready   = (!tx_grant_photo && !tx_grant_cam && !tx_grant_roi) ? udp_tx_ready : 1'b0;
+wire        rom_app_tx_ack     = (!tx_grant_photo && !tx_grant_cam && !tx_grant_roi) ? app_tx_ack   : 1'b0;
 wire        photo_udp_tx_ready = tx_grant_photo ? udp_tx_ready : 1'b0;
 wire        photo_app_tx_ack   = tx_grant_photo ? app_tx_ack   : 1'b0;
 wire        cam_udp_tx_ready   = tx_grant_cam   ? udp_tx_ready : 1'b0;
 wire        cam_app_tx_ack     = tx_grant_cam   ? app_tx_ack   : 1'b0;
+wire        roi_udp_tx_ready   = tx_grant_roi   ? udp_tx_ready : 1'b0;
+wire        roi_app_tx_ack     = tx_grant_roi   ? app_tx_ack   : 1'b0;
 
 assign app_tx_data_request = tx_grant_photo ? photo_app_tx_request :
-                             tx_grant_cam   ? cam_app_tx_request   : rom_app_tx_request;
+                             tx_grant_cam   ? cam_app_tx_request   :
+                             tx_grant_roi   ? roi_app_tx_request   : rom_app_tx_request;
 assign app_tx_data_valid   = tx_grant_photo ? photo_app_tx_data_valid :
-                             tx_grant_cam   ? cam_app_tx_data_valid   : rom_app_tx_data_valid;
+                             tx_grant_cam   ? cam_app_tx_data_valid   :
+                             tx_grant_roi   ? roi_app_tx_data_valid   : rom_app_tx_data_valid;
 assign app_tx_data         = tx_grant_photo ? photo_app_tx_data :
-                             tx_grant_cam   ? cam_app_tx_data   : rom_app_tx_data;
+                             tx_grant_cam   ? cam_app_tx_data   :
+                             tx_grant_roi   ? roi_app_tx_data   : rom_app_tx_data;
 assign udp_data_length     = tx_grant_photo ? photo_udp_data_length :
-                             tx_grant_cam   ? cam_udp_data_length   : rom_udp_data_length;
+                             tx_grant_cam   ? cam_udp_data_length   :
+                             tx_grant_roi   ? roi_udp_data_length   : rom_udp_data_length;
 
 // FPGA -> PC 鍥惧儚鍥炰紶锛欳MD_IMG_REQ 瑙﹀彂鍗曞寘 16x16 RGB222 鍥惧儚杩斿洖�?
 // cam_en=0 鏃惰繑鍥?PC 涓婁紶鍥惧儚鐨勪綆鍒嗚鲸鐜囬暅鍍忥紱cam_en=1 鏃惰繑鍥炴憚鍍忓�?16x16 闀滃儚�?
@@ -1826,6 +1841,28 @@ track_fifo_tx #(
 `endif
 `endif
 
+cam_roi_tx #(
+    .GRID_W (8'd80),
+    .GRID_H (8'd60)
+) u_cam_roi_tx (
+    .clk                (udp_clk),
+    .rst_n              (rst_n),
+    .roi_event_tog      (m_tog_sync),
+    .roi_xmin           (trk_xmin[6:0]),
+    .roi_xmax           (trk_xmax[6:0]),
+    .roi_ymin           (trk_ymin[6:0]),
+    .roi_ymax           (trk_ymax[6:0]),
+    .roi_area           (trk_area[12:0]),
+    .roi_valid          (trk_valid),
+    .udp_tx_ready       (roi_udp_tx_ready),
+    .app_tx_ack         (roi_app_tx_ack),
+    .app_tx_data        (roi_app_tx_data),
+    .app_tx_data_valid  (roi_app_tx_data_valid),
+    .udp_data_length    (roi_udp_data_length),
+    .app_tx_request     (roi_app_tx_request),
+    .busy               (roi_tx_busy)
+);
+
 //------------------------------------------------------------
 //UDP
 //------------------------------------------------------------       
@@ -1840,8 +1877,8 @@ u3_udp_ip_protocol_stack
 (   
     .udp_rx_clk                 (udp_clk                ),
     .udp_tx_clk                 (udp_clk                ),
-    .reset                      (1'b0                  ), 
-    .udp2app_tx_ready           (udp_tx_ready           ), 
+    .reset                      (reset                  ),
+    .udp2app_tx_ready           (udp_tx_ready           ),
     .udp2app_tx_ack             (app_tx_ack             ), 
     .app_tx_request             (app_tx_data_request    ), 
     .app_tx_data_valid          (app_tx_data_valid      ), 
